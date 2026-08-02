@@ -30,5 +30,5 @@ fn main() {
     println!("  RequestPreset 0 {}", hex(&preset));
 
     println!();
-    println!("Read-only until M3. See PLAN.md for milestones.");
+    println!("Read-only until M3. See docs/plans/ for milestones.");
 }
