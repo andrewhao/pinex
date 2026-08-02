@@ -1,0 +1,10 @@
+[package]
+name = "pinex-proto"
+description = "Pure codec for the IK Multimedia Tonex ONE serial protocol. No I/O, no threads, no hardware."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crc.workspace = true
