@@ -1,0 +1,9 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Tooling scratch
+.claude-flow/
+
+# macOS
+.DS_Store
