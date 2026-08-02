@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pinex-proto",
+    "crates/pinex-device",
+    "crates/pinex-ui",
+    "crates/pinex-input",
+    "crates/pinex-web",
+    "crates/pinex",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/andrewhao/pinex"
+
+[workspace.dependencies]
+pinex-proto = { path = "crates/pinex-proto" }
+crc = "3"

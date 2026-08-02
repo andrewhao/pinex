@@ -1,5 +1,23 @@
 # Pinex — Raspberry Pi footswitch controller + display for the IK Multimedia Tonex ONE
 
+> **Document type:** design doc — the locked decisions and milestone map. Not an
+> executable task list. Implementation plans live beside it in `docs/plans/` and
+> cite it.
+>
+> **Status:** decisions in "Locked decisions" and "Crate selection" remain
+> authoritative. **Three protocol claims below were superseded** by reading the
+> reference implementations during the M0/`pinex-proto` slice — see
+> [`2026-08-02-pinex-proto-scaffolding.md`](2026-08-02-pinex-proto-scaffolding.md):
+>
+> | Superseded here | Corrected by |
+> |---|---|
+> | "The central hazard" — read → parse → **re-serialize** → diff (Protocol facts; Risks) | Finding 2 — patch the raw buffer in place; never re-serialize |
+> | "Next/Prev walks 1..20, loading into the **active** slot" (Locked decisions; M3) | Finding 5 — stage into the *inactive* slot, then switch |
+> | "CRC variant guess is wrong" as an open risk (Crate selection; Risks) | Finding 1 — confirmed `CRC_16_IBM_SDLC`, now a test assertion |
+>
+> The locked *decisions* survive all three; only the mechanisms changed. Body
+> text is preserved verbatim as written rather than rewritten in place.
+
 ## Context
 
 The Tonex ONE is a great-sounding amp modeller crippled by its control surface: **one** physical footswitch (toggles slot A/B) and **no display**. It stores 20 presets, but on a dark stage you cannot tell which one is loaded, and you cannot reach presets 3–20 with your foot at all.
