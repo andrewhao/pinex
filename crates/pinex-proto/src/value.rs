@@ -5,7 +5,7 @@
 //! | Tag         | Meaning                                  |
 //! |-------------|------------------------------------------|
 //! | `0x00-0x7F` | literal small integer (the tag *is* the value) |
-//! | `0x80`      | integer — see [`tag_width`] for the width question |
+//! | `0x80`      | integer, 1 byte follows (values `0x80-0xFF`) |
 //! | `0x81`      | u16 little-endian                        |
 //! | `0x82`      | u16 little-endian                        |
 //! | `0x88`      | IEEE-754 f32 little-endian               |
@@ -48,32 +48,26 @@ impl std::fmt::Display for ValueError {
 
 impl std::error::Error for ValueError {}
 
-/// How many bytes follow the `0x80` tag.
+/// How many bytes follow the `0x80` tag: **one**.
 ///
-/// **This is the one genuinely unresolved question in the codec, and it is
-/// deliberately isolated here so a single edit settles it.**
+/// `protocol.md` says `0x80`, `0x81` and `0x82` are all u16 little-endian. Its
+/// prose is wrong, and its own captured examples are the proof — a `0xB9 0x03`
+/// collection declares three elements, and `0xB9 0x03 0x80 0xFF 0x3F 0x00`
+/// only contains three under the 1-byte reading (`0x80 0xFF`=255, `0x3F`=63,
+/// `0x00`=0 — an RGB color). Under the 2-byte reading it contains two. Both
+/// shipping implementations read it as 1 byte.
 ///
-/// `protocol.md` says `0x80`, `0x81` and `0x82` are all u16 little-endian — i.e.
-/// width 2. But both shipping implementations (`vit3k/tonex_controller`'s
-/// `parseValue` and `Builty/TonexOneController`'s `tonex_common_parse_value`,
-/// which is a direct port) read `0x80` as tag **+ 1 byte** while reading
-/// `0x81`/`0x82` as tag + 2.
+/// This also answers the question `protocol.md` leaves open — why `0xFF` appears
+/// "escaped" with an `0x80` prefix in colors. It is not escaping: bare literals
+/// only reach `0x7F`, so `0x3F` fits inline and `0xFF` does not.
 ///
-/// We follow the implementations, not the prose, because Builty validates every
-/// parsed header against a strict `remaining == header.size` check that would
-/// reject every message from real hardware if the width were wrong — and that
-/// project demonstrably reads preset names off a real pedal.
+/// Confirmed against real hardware bytes: the captured Hello response satisfies
+/// the strict `remaining == size` check exactly. See
+/// `tests/fixtures.rs::captured_hello_response_is_internally_consistent`.
 ///
-/// The catch, and the reason this comment is long: the three *request* frames in
-/// [`crate::message`] are only self-consistent under the **other** reading. With
-/// width 2, all three have `remaining == size` exactly; with width 1 all three
-/// are off by one. See `message::tests::request_frames_size_field_discrepancy`,
-/// which pins that observation down so it is not lost. Requests are hardcoded
-/// byte arrays in both references and never pass through their parsers, so the
-/// inconsistency is invisible to them.
-///
-/// Resolving this needs one captured response frame. Until then, parsing follows
-/// hardware-validated behaviour.
+/// (Requests are `size + 1` because they carry one extra structural byte that
+/// responses lack — not a width problem. See
+/// `message::tests::requests_carry_one_extra_header_byte_that_responses_do_not`.)
 pub const fn tag_width(tag: u8) -> usize {
     match tag {
         0x80 => 1,

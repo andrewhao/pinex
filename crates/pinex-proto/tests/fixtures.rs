@@ -77,8 +77,9 @@ fn captured_frames_decode() {
                         "{name} frame {i}: {strict}\n\
                          unvalidated header: {loose:?}\n\
                          body: {body:02x?}\n\
-                         If the size is off by exactly one, read \
-                         pinex_proto::value::tag_width."
+                         If the size is off by exactly one, this may be a \
+                         request rather than a response — see message::tests::\
+                         requests_carry_one_extra_header_byte_that_responses_do_not."
                     );
                 }
             }

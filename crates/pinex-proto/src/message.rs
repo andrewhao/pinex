@@ -339,21 +339,19 @@ mod tests {
     /// Pins down the `0x80` tag-width discrepancy documented on
     /// [`crate::value::tag_width`].
     ///
-    /// Under the reference reading (`0x80` = tag + 1 byte) all three request
-    /// frames declare a size exactly one less than the bytes that follow. Under
-    /// the `protocol.md` reading (tag + 2) all three would be exactly consistent.
+    /// Requests carry one structural byte after the `0x80` field that responses
+    /// do not (`0x01` for Hello, `0x03` for RequestState and RequestPreset), so
+    /// a request's body is `size + 1`. Responses are exactly `size` — see
+    /// `tests/fixtures.rs::captured_hello_response_is_internally_consistent`,
+    /// which asserts that against real hardware bytes.
     ///
-    /// Three-for-three is not coincidence, so this is real evidence — but it is
-    /// outweighed by the fact that Builty's strict size check passes against
-    /// live hardware on *responses*, which is the only path where the width
-    /// actually affects our parsing. Requests are hardcoded arrays in both
-    /// references and never pass through their parsers, so nothing there would
-    /// have caught an inconsistent size field.
+    /// This asymmetry is why the requests once looked like evidence for a 2-byte
+    /// `0x80` tag: that reading absorbed the extra byte and made the arithmetic
+    /// come out even. See [`crate::value::tag_width`] for what settled it.
     ///
-    /// If this test ever starts failing, the ambiguity has been resolved — go
-    /// read `tag_width`.
+    /// We only ever parse responses, so [`parse_header`] is correct as written.
     #[test]
-    fn request_frames_size_field_discrepancy() {
+    fn requests_carry_one_extra_header_byte_that_responses_do_not() {
         let preset_payload =
             decode_frame(&request_preset(0, PresetDetail::Summary).unwrap()).unwrap();
 
@@ -363,7 +361,7 @@ mod tests {
             assert_eq!(
                 remaining,
                 header.size as usize + 1,
-                "expected the documented off-by-one for {payload:02x?}"
+                "request should carry exactly one extra byte: {payload:02x?}"
             );
         }
     }
