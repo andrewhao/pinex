@@ -1,17 +1,17 @@
 //! Regression corpus of real captured frames.
 //!
-//! There are no captures yet — no pedal has been connected. This harness exists
-//! so that adding one is a file copy and nothing else: drop a `.bin` of raw bytes
-//! read from the tty into `tests/fixtures/` and it gets decoded here.
+//! Drop a `.bin` of raw bytes read from the tty into `tests/fixtures/` and it
+//! gets decoded here — no registration step. See that directory's README for
+//! provenance of what is already present.
 //!
-//! It passes trivially while the directory is empty. That is deliberate, and it
-//! is why the assertions below print what they found: a green run here means
-//! "nothing contradicted us", not "the protocol is verified".
+//! A green run means "nothing contradicted us". For the synthesized request
+//! frames that is weak; for `hello_response.bin`, whose CRC was computed by a
+//! real pedal, it is strong.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pinex_proto::message::parse_header_unvalidated;
+use pinex_proto::message::{parse_header_unvalidated, MessageType};
 use pinex_proto::{decode_frame, parse_header, FrameAccumulator};
 
 fn fixture_dir() -> PathBuf {
@@ -84,4 +84,29 @@ fn captured_frames_decode() {
             }
         }
     }
+}
+
+/// The Hello response captured from real hardware, transcribed from
+/// `vit3k/tonex_controller`'s `protocol.md`. Unlike the synthesized request
+/// frames, this is a genuine device reply: its CRC was computed by the pedal.
+#[test]
+fn captured_hello_response_is_internally_consistent() {
+    let bytes =
+        fs::read(fixture_dir().join("hello_response.bin")).expect("hello_response.bin missing");
+
+    let mut acc = FrameAccumulator::new();
+    let frames = acc.push(&bytes);
+    assert_eq!(frames.len(), 1, "expected exactly one frame");
+
+    // decode_frame validates the CRC. That it passes means our CRC-16/IBM-SDLC
+    // matches the one the pedal actually computed — not a reimplementation.
+    let body = decode_frame(&frames[0]).expect("CRC or framing rejected a real frame");
+
+    // parse_header enforces `remaining == size`. That it passes on a real
+    // response is what settles the tag-width question; see value::tag_width.
+    let header = parse_header(&body).expect("real response failed the strict size check");
+
+    assert_eq!(header.msg_type, MessageType::Hello);
+    assert_eq!(header.size, 43);
+    assert_eq!(body.len() - header.body_offset, 43);
 }
