@@ -149,6 +149,36 @@ pub fn read_list_header(buf: &[u8], index: &mut usize) -> Result<(u8, u16), Valu
     Ok((tag, count))
 }
 
+/// Advance `*index` past one complete value of any type, descending into lists.
+///
+/// This is how to reach the Nth element of a heterogeneous list without
+/// hardcoding byte offsets — the shape of a message can then change without
+/// silently shifting every field after it.
+pub fn skip_value(buf: &[u8], index: &mut usize) -> Result<(), ValueError> {
+    let tag = *buf.get(*index).ok_or(ValueError::Truncated {
+        offset: *index,
+        need: 1,
+    })?;
+
+    match tag {
+        0x80..=0x82 => {
+            read_int(buf, index)?;
+        }
+        0x88 => {
+            read_f32(buf, index)?;
+        }
+        0xB9 | 0xBA | 0xBC => {
+            let (_, count) = read_list_header(buf, index)?;
+            for _ in 0..count {
+                skip_value(buf, index)?;
+            }
+        }
+        // A literal small integer is its own value.
+        _ => *index += 1,
+    }
+    Ok(())
+}
+
 /// Encode a u16 with the `0x82` tag, the form used for sizes on the wire.
 pub fn write_u16(out: &mut Vec<u8>, value: u16) {
     out.push(0x82);
@@ -251,5 +281,31 @@ mod tests {
             read_list_header(&[0x82, 0x01], &mut i),
             Err(ValueError::UnexpectedTag { found: 0x82, .. })
         ));
+    }
+
+    #[test]
+    fn skip_value_advances_past_each_encoding() {
+        // literal, 0x80+1, 0x81+2, 0x82+2, f32, and a nested list
+        let buf = [
+            0x05, // literal
+            0x80, 0xc7, // 1-byte int
+            0x81, 0xd1, 0x01, // 2-byte int
+            0x82, 0x02, 0x00, // 2-byte int
+            0x88, 0x00, 0x00, 0x70, 0x41, // f32
+            0xb9, 0x03, 0x01, 0x01, 0x03, // 3-element list
+        ];
+
+        let mut i = 0;
+        for expected in [1, 3, 6, 9, 14, 19] {
+            skip_value(&buf, &mut i).unwrap();
+            assert_eq!(i, expected);
+        }
+        assert_eq!(i, buf.len());
+    }
+
+    #[test]
+    fn skip_value_errors_rather_than_panicking_on_truncation() {
+        let mut i = 0;
+        assert!(skip_value(&[0x88, 0x00], &mut i).is_err());
     }
 }
