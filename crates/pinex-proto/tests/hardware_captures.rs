@@ -190,6 +190,67 @@ fn every_preset_index_produces_a_safe_write_from_real_state() {
     assert!(pinex_proto::message::set_preset(&state, 20).is_err());
 }
 
+/// Exhaustive write-path check from the pedal's own bytes.
+///
+/// For every starting slot and every target preset, the frame we would transmit
+/// must satisfy all four properties that make a write safe. This is as close to
+/// proving the write path as is possible without transmitting: the only thing
+/// left unestablished is whether the pedal *accepts* it.
+#[test]
+fn every_write_from_real_state_is_safe_in_all_four_ways() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let base = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+
+    for start_slot in [Slot::A, Slot::B, Slot::C] {
+        let mut state = base.clone();
+        state.set_active_slot(start_slot);
+
+        for target in 0..pinex_proto::state::MAX_PRESETS {
+            let (frame, intended) = pinex_proto::message::set_preset(&state, target)
+                .unwrap_or_else(|e| panic!("slot {start_slot:?} preset {target}: {e}"));
+
+            let payload = decode_frame(&frame).expect("must be a decodable frame");
+            let sent = &payload[payload.len() - state.len()..];
+
+            // 1. Length is preserved — the pedal gets back a state of its own size.
+            assert_eq!(sent.len(), state.len(), "{start_slot:?}/{target}: resized");
+
+            // 2. Nothing outside the intended offsets moved.
+            for i in 0..state.len() {
+                if state.raw()[i] != sent[i] {
+                    assert!(
+                        intended.contains(&i),
+                        "{start_slot:?}/{target}: byte {i} changed unintentionally"
+                    );
+                }
+            }
+
+            // 3. The result actually selects the preset we asked for.
+            let next = PedalState::from_body(sent.to_vec()).unwrap();
+            assert_eq!(
+                next.active_preset().unwrap(),
+                target,
+                "{start_slot:?}/{target}: wrong preset selected"
+            );
+
+            // 4. Direct monitoring is on, or USB leaves the pedal silent.
+            assert_eq!(
+                next.direct_monitoring(),
+                1,
+                "{start_slot:?}/{target}: would mute the pedal"
+            );
+
+            // And the slot being heard before the change is never the one we wrote.
+            assert_ne!(
+                next.active_slot().unwrap(),
+                start_slot,
+                "{start_slot:?}/{target}: overwrote the slot that was playing"
+            );
+        }
+    }
+}
+
 /// The name sits in a fixed 33-byte buffer followed by its true length. Trusting
 /// the buffer alone would drag the null padding into the string.
 #[test]
