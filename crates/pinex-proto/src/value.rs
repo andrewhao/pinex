@@ -21,7 +21,19 @@ pub enum ValueError {
         found: u8,
         expected: &'static str,
     },
+    /// Lists nested deeper than [`MAX_LIST_DEPTH`].
+    TooDeep { offset: usize, limit: usize },
 }
+
+/// How deep [`skip_value`] will descend into nested lists before giving up.
+///
+/// Not a protocol constant — the pedal's own messages nest only a few levels.
+/// It exists because descent is recursive and the bytes come from a device we
+/// do not control: a frame need only spend two bytes (`0xB9 0x01`) per level,
+/// so one within the accumulator's 64 KiB limit could otherwise drive ~32k
+/// stack frames and abort the process on a stack overflow. An `Err` a caller
+/// can handle is strictly better than a `SIGABRT` it cannot.
+pub const MAX_LIST_DEPTH: usize = 32;
 
 impl std::fmt::Display for ValueError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,6 +53,9 @@ impl std::fmt::Display for ValueError {
                     f,
                     "unexpected tag {found:#04x} at offset {offset}, expected {expected}"
                 )
+            }
+            Self::TooDeep { offset, limit } => {
+                write!(f, "list nesting at offset {offset} exceeds depth {limit}")
             }
         }
     }
@@ -154,7 +169,14 @@ pub fn read_list_header(buf: &[u8], index: &mut usize) -> Result<(u8, u16), Valu
 /// This is how to reach the Nth element of a heterogeneous list without
 /// hardcoding byte offsets — the shape of a message can then change without
 /// silently shifting every field after it.
+///
+/// Nesting beyond [`MAX_LIST_DEPTH`] is rejected rather than followed; see that
+/// constant for why.
 pub fn skip_value(buf: &[u8], index: &mut usize) -> Result<(), ValueError> {
+    skip_value_at_depth(buf, index, 0)
+}
+
+fn skip_value_at_depth(buf: &[u8], index: &mut usize, depth: usize) -> Result<(), ValueError> {
     let tag = *buf.get(*index).ok_or(ValueError::Truncated {
         offset: *index,
         need: 1,
@@ -168,9 +190,15 @@ pub fn skip_value(buf: &[u8], index: &mut usize) -> Result<(), ValueError> {
             read_f32(buf, index)?;
         }
         0xB9 | 0xBA | 0xBC => {
+            if depth >= MAX_LIST_DEPTH {
+                return Err(ValueError::TooDeep {
+                    offset: *index,
+                    limit: MAX_LIST_DEPTH,
+                });
+            }
             let (_, count) = read_list_header(buf, index)?;
             for _ in 0..count {
-                skip_value(buf, index)?;
+                skip_value_at_depth(buf, index, depth + 1)?;
             }
         }
         // A literal small integer is its own value.
@@ -307,5 +335,32 @@ mod tests {
     fn skip_value_errors_rather_than_panicking_on_truncation() {
         let mut i = 0;
         assert!(skip_value(&[0x88, 0x00], &mut i).is_err());
+    }
+
+    #[test]
+    fn skip_value_rejects_nesting_instead_of_overflowing_the_stack() {
+        // Two bytes buys one level of nesting, so a frame within the
+        // accumulator's 64 KiB limit can carry ~32k levels. Recursing that far
+        // aborts the process with SIGABRT, which no caller can handle.
+        let mut buf = [0xB9u8, 0x01].repeat(20_000);
+        buf.push(0x00);
+
+        let mut i = 0;
+        assert!(matches!(
+            skip_value(&buf, &mut i),
+            Err(ValueError::TooDeep { .. })
+        ));
+    }
+
+    #[test]
+    fn skip_value_allows_nesting_real_messages_use() {
+        // Deepest observed shape is a handful of levels; the limit must not be
+        // so tight that legitimate pedal messages trip it.
+        let mut buf = [0xB9u8, 0x01].repeat(MAX_LIST_DEPTH - 1);
+        buf.push(0x00);
+
+        let mut i = 0;
+        skip_value(&buf, &mut i).expect("nesting within the limit must be accepted");
+        assert_eq!(i, buf.len());
     }
 }
