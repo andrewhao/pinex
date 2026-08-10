@@ -217,8 +217,8 @@ fn every_write_from_real_state_is_safe_in_all_four_ways() {
             assert_eq!(sent.len(), state.len(), "{start_slot:?}/{target}: resized");
 
             // 2. Nothing outside the intended offsets moved.
-            for i in 0..state.len() {
-                if state.raw()[i] != sent[i] {
+            for (i, (before, after)) in state.raw().iter().zip(sent).enumerate() {
+                if before != after {
                     assert!(
                         intended.contains(&i),
                         "{start_slot:?}/{target}: byte {i} changed unintentionally"
