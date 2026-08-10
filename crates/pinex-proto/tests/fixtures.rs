@@ -11,7 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pinex_proto::message::{parse_header_unvalidated, MessageType};
+use pinex_proto::message::{parse_header_unvalidated, parse_hello, MessageType};
 use pinex_proto::{decode_frame, parse_header, FrameAccumulator};
 
 fn fixture_dir() -> PathBuf {
@@ -110,4 +110,16 @@ fn captured_hello_response_is_internally_consistent() {
     assert_eq!(header.msg_type, MessageType::Hello);
     assert_eq!(header.size, 43);
     assert_eq!(body.len() - header.body_offset, 43);
+}
+
+/// The captured response's own annotation says "firmware version - 1.1.3".
+/// This asserts we recover exactly that from the real bytes.
+#[test]
+fn firmware_version_parses_from_the_captured_hello_response() {
+    let bytes = fs::read(fixture_dir().join("hello_response.bin")).unwrap();
+    let mut acc = FrameAccumulator::new();
+    let frames = acc.push(&bytes);
+    let body = decode_frame(&frames[0]).unwrap();
+
+    assert_eq!(parse_hello(&body).unwrap(), "1.1.3");
 }

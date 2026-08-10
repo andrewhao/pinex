@@ -5,7 +5,7 @@
 
 use crate::frame::encode_frame;
 use crate::state::{PedalState, MAX_PRESETS};
-use crate::value::{read_int, ValueError};
+use crate::value::{read_int, read_list_header, skip_value, ValueError};
 
 /// Message type of a state update, sent by the pedal and echoed back on write.
 pub const TYPE_STATE_UPDATE: u16 = 0x0306;
@@ -73,6 +73,10 @@ pub enum MessageError {
         preset: u8,
         max: u8,
     },
+    /// Structure did not match what the captured fixtures show.
+    UnexpectedShape {
+        what: &'static str,
+    },
     Value(ValueError),
 }
 
@@ -97,6 +101,7 @@ impl std::fmt::Display for MessageError {
             Self::PresetOutOfRange { preset, max } => {
                 write!(f, "preset {preset} out of range (0..{max})")
             }
+            Self::UnexpectedShape { what } => write!(f, "unexpected message shape: {what}"),
             Self::Value(err) => write!(f, "{err}"),
         }
     }
@@ -160,6 +165,43 @@ pub fn write_state(state: &PedalState) -> Vec<u8> {
     ];
     payload.extend_from_slice(raw);
     encode_frame(&payload)
+}
+
+/// Index of the firmware-version element within the Hello response body list.
+///
+/// Derived from the captured response in `tests/fixtures/hello_response.bin`,
+/// whose own annotation identifies element 3 as the version.
+const HELLO_FIRMWARE_ELEMENT: u16 = 3;
+
+/// Extract the firmware version string from a Hello response body.
+///
+/// Returns e.g. `"1.1.3"`. Errors rather than guessing if the shape differs —
+/// a firmware update changing this layout must be loud, not silent.
+pub fn parse_hello(body: &[u8]) -> Result<String, MessageError> {
+    let header = parse_header(body)?;
+    let mut index = header.body_offset;
+
+    let (_, count) = read_list_header(body, &mut index)?;
+    if count <= HELLO_FIRMWARE_ELEMENT {
+        return Err(MessageError::UnexpectedShape {
+            what: "hello body list too short for a firmware element",
+        });
+    }
+
+    for _ in 0..HELLO_FIRMWARE_ELEMENT {
+        skip_value(body, &mut index)?;
+    }
+
+    let (_, parts) = read_list_header(body, &mut index)?;
+    let mut out = String::new();
+    for i in 0..parts {
+        let part = read_int(body, &mut index)?;
+        if i > 0 {
+            out.push('.');
+        }
+        out.push_str(&part.to_string());
+    }
+    Ok(out)
 }
 
 /// Parse a header without checking the declared size.

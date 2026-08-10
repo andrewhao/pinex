@@ -7,3 +7,16 @@
 
 # macOS
 .DS_Store
+
+# Ruflo local secrets and runtime data
+.env
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Claude Code / ruflo tooling and runtime state
+.claude/
+.agents/
+ruvector.db
