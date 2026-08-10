@@ -15,6 +15,8 @@
 //! - ModemManager will probe a CDC-ACM device and send AT commands at it. Rule
 //!   this out first if the handshake misbehaves.
 
+pub mod reader;
 pub mod transport;
 
+pub use reader::{PedalEvent, Reader};
 pub use transport::{Transport, TtyTransport};
