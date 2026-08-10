@@ -14,17 +14,29 @@
 //! the offsets it intended, and nothing else.
 
 /// Offsets counted from the start of the state body.
+///
+/// Corrected against the captured message in
+/// `tests/fixtures/bodies/state_changed.body.bin`; the previous values were all
+/// five bytes too high and addressed the wrong fields. `tests/state_offsets.rs`
+/// pins each one to the annotation its capture carries.
+///
+/// Unlike [`offset_from_end`], these are read-only: nothing in the write path
+/// patches through them, so the earlier error could not have corrupted a pedal.
 pub mod offset_from_start {
-    /// f32: -15.0 .. +15.0
-    pub const INPUT_TRIM: usize = 15;
-    /// `0x00` = A/B mode, `0x01` = stomp mode
-    pub const STOMP_MODE: usize = 19;
+    /// f32: -15.0 .. +15.0. Points at the value bytes, past the `0x88` tag.
+    pub const INPUT_TRIM: usize = 5;
+    /// `0x00` = A/B mode, `0x01` = stomp mode.
+    ///
+    /// **Inferred, not annotated.** The capture leaves this byte unlabelled;
+    /// it is identified only by sitting immediately before `cabsimBypass`, so
+    /// it is the least trustworthy constant here.
+    pub const STOMP_MODE: usize = 14;
     /// `0x00` = off, `0x01` = on
-    pub const CAB_BYPASS: usize = 20;
+    pub const CAB_BYPASS: usize = 15;
     /// `0x00` = mute, `0x01` = through
-    pub const TUNING_MODE: usize = 21;
-    /// Start of the per-preset RGB colour array.
-    pub const COLORS: usize = 22;
+    pub const TUNING_MODE: usize = 16;
+    /// The `0xBA` header of the per-preset RGB colour array.
+    pub const COLORS: usize = 17;
 }
 
 /// Offsets counted back from the end of the state body, as `len - N`.

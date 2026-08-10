@@ -5,7 +5,7 @@
 //! | Tag         | Meaning                                  |
 //! |-------------|------------------------------------------|
 //! | `0x00-0x7F` | literal small integer (the tag *is* the value) |
-//! | `0x80`      | integer — see [`tag_width`] for the width question |
+//! | `0x80`      | integer, 1 byte follows (values `0x80-0xFF`) |
 //! | `0x81`      | u16 little-endian                        |
 //! | `0x82`      | u16 little-endian                        |
 //! | `0x88`      | IEEE-754 f32 little-endian               |
@@ -21,7 +21,19 @@ pub enum ValueError {
         found: u8,
         expected: &'static str,
     },
+    /// Lists nested deeper than [`MAX_LIST_DEPTH`].
+    TooDeep { offset: usize, limit: usize },
 }
+
+/// How deep [`skip_value`] will descend into nested lists before giving up.
+///
+/// Not a protocol constant — the pedal's own messages nest only a few levels.
+/// It exists because descent is recursive and the bytes come from a device we
+/// do not control: a frame need only spend two bytes (`0xB9 0x01`) per level,
+/// so one within the accumulator's 64 KiB limit could otherwise drive ~32k
+/// stack frames and abort the process on a stack overflow. An `Err` a caller
+/// can handle is strictly better than a `SIGABRT` it cannot.
+pub const MAX_LIST_DEPTH: usize = 32;
 
 impl std::fmt::Display for ValueError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,38 +54,35 @@ impl std::fmt::Display for ValueError {
                     "unexpected tag {found:#04x} at offset {offset}, expected {expected}"
                 )
             }
+            Self::TooDeep { offset, limit } => {
+                write!(f, "list nesting at offset {offset} exceeds depth {limit}")
+            }
         }
     }
 }
 
 impl std::error::Error for ValueError {}
 
-/// How many bytes follow the `0x80` tag.
+/// How many bytes follow the `0x80` tag: **one**.
 ///
-/// **This is the one genuinely unresolved question in the codec, and it is
-/// deliberately isolated here so a single edit settles it.**
+/// `protocol.md` says `0x80`, `0x81` and `0x82` are all u16 little-endian. Its
+/// prose is wrong, and its own captured examples are the proof — a `0xB9 0x03`
+/// collection declares three elements, and `0xB9 0x03 0x80 0xFF 0x3F 0x00`
+/// only contains three under the 1-byte reading (`0x80 0xFF`=255, `0x3F`=63,
+/// `0x00`=0 — an RGB color). Under the 2-byte reading it contains two. Both
+/// shipping implementations read it as 1 byte.
 ///
-/// `protocol.md` says `0x80`, `0x81` and `0x82` are all u16 little-endian — i.e.
-/// width 2. But both shipping implementations (`vit3k/tonex_controller`'s
-/// `parseValue` and `Builty/TonexOneController`'s `tonex_common_parse_value`,
-/// which is a direct port) read `0x80` as tag **+ 1 byte** while reading
-/// `0x81`/`0x82` as tag + 2.
+/// This also answers the question `protocol.md` leaves open — why `0xFF` appears
+/// "escaped" with an `0x80` prefix in colors. It is not escaping: bare literals
+/// only reach `0x7F`, so `0x3F` fits inline and `0xFF` does not.
 ///
-/// We follow the implementations, not the prose, because Builty validates every
-/// parsed header against a strict `remaining == header.size` check that would
-/// reject every message from real hardware if the width were wrong — and that
-/// project demonstrably reads preset names off a real pedal.
+/// Confirmed against real hardware bytes: the captured Hello response satisfies
+/// the strict `remaining == size` check exactly. See
+/// `tests/fixtures.rs::captured_hello_response_is_internally_consistent`.
 ///
-/// The catch, and the reason this comment is long: the three *request* frames in
-/// [`crate::message`] are only self-consistent under the **other** reading. With
-/// width 2, all three have `remaining == size` exactly; with width 1 all three
-/// are off by one. See `message::tests::request_frames_size_field_discrepancy`,
-/// which pins that observation down so it is not lost. Requests are hardcoded
-/// byte arrays in both references and never pass through their parsers, so the
-/// inconsistency is invisible to them.
-///
-/// Resolving this needs one captured response frame. Until then, parsing follows
-/// hardware-validated behaviour.
+/// (Requests are `size + 1` because they carry one extra structural byte that
+/// responses lack — not a width problem. See
+/// `message::tests::requests_carry_one_extra_header_byte_that_responses_do_not`.)
 pub const fn tag_width(tag: u8) -> usize {
     match tag {
         0x80 => 1,
@@ -153,6 +162,49 @@ pub fn read_list_header(buf: &[u8], index: &mut usize) -> Result<(u8, u16), Valu
     let count = read_int(buf, &mut cursor)?;
     *index = cursor;
     Ok((tag, count))
+}
+
+/// Advance `*index` past one complete value of any type, descending into lists.
+///
+/// This is how to reach the Nth element of a heterogeneous list without
+/// hardcoding byte offsets — the shape of a message can then change without
+/// silently shifting every field after it.
+///
+/// Nesting beyond [`MAX_LIST_DEPTH`] is rejected rather than followed; see that
+/// constant for why.
+pub fn skip_value(buf: &[u8], index: &mut usize) -> Result<(), ValueError> {
+    skip_value_at_depth(buf, index, 0)
+}
+
+fn skip_value_at_depth(buf: &[u8], index: &mut usize, depth: usize) -> Result<(), ValueError> {
+    let tag = *buf.get(*index).ok_or(ValueError::Truncated {
+        offset: *index,
+        need: 1,
+    })?;
+
+    match tag {
+        0x80..=0x82 => {
+            read_int(buf, index)?;
+        }
+        0x88 => {
+            read_f32(buf, index)?;
+        }
+        0xB9 | 0xBA | 0xBC => {
+            if depth >= MAX_LIST_DEPTH {
+                return Err(ValueError::TooDeep {
+                    offset: *index,
+                    limit: MAX_LIST_DEPTH,
+                });
+            }
+            let (_, count) = read_list_header(buf, index)?;
+            for _ in 0..count {
+                skip_value_at_depth(buf, index, depth + 1)?;
+            }
+        }
+        // A literal small integer is its own value.
+        _ => *index += 1,
+    }
+    Ok(())
 }
 
 /// Encode a u16 with the `0x82` tag, the form used for sizes on the wire.
@@ -257,5 +309,58 @@ mod tests {
             read_list_header(&[0x82, 0x01], &mut i),
             Err(ValueError::UnexpectedTag { found: 0x82, .. })
         ));
+    }
+
+    #[test]
+    fn skip_value_advances_past_each_encoding() {
+        // literal, 0x80+1, 0x81+2, 0x82+2, f32, and a nested list
+        let buf = [
+            0x05, // literal
+            0x80, 0xc7, // 1-byte int
+            0x81, 0xd1, 0x01, // 2-byte int
+            0x82, 0x02, 0x00, // 2-byte int
+            0x88, 0x00, 0x00, 0x70, 0x41, // f32
+            0xb9, 0x03, 0x01, 0x01, 0x03, // 3-element list
+        ];
+
+        let mut i = 0;
+        for expected in [1, 3, 6, 9, 14, 19] {
+            skip_value(&buf, &mut i).unwrap();
+            assert_eq!(i, expected);
+        }
+        assert_eq!(i, buf.len());
+    }
+
+    #[test]
+    fn skip_value_errors_rather_than_panicking_on_truncation() {
+        let mut i = 0;
+        assert!(skip_value(&[0x88, 0x00], &mut i).is_err());
+    }
+
+    #[test]
+    fn skip_value_rejects_nesting_instead_of_overflowing_the_stack() {
+        // Two bytes buys one level of nesting, so a frame within the
+        // accumulator's 64 KiB limit can carry ~32k levels. Recursing that far
+        // aborts the process with SIGABRT, which no caller can handle.
+        let mut buf = [0xB9u8, 0x01].repeat(20_000);
+        buf.push(0x00);
+
+        let mut i = 0;
+        assert!(matches!(
+            skip_value(&buf, &mut i),
+            Err(ValueError::TooDeep { .. })
+        ));
+    }
+
+    #[test]
+    fn skip_value_allows_nesting_real_messages_use() {
+        // Deepest observed shape is a handful of levels; the limit must not be
+        // so tight that legitimate pedal messages trip it.
+        let mut buf = [0xB9u8, 0x01].repeat(MAX_LIST_DEPTH - 1);
+        buf.push(0x00);
+
+        let mut i = 0;
+        skip_value(&buf, &mut i).expect("nesting within the limit must be accepted");
+        assert_eq!(i, buf.len());
     }
 }

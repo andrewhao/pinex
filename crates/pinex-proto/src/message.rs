@@ -5,7 +5,7 @@
 
 use crate::frame::encode_frame;
 use crate::state::{PedalState, MAX_PRESETS};
-use crate::value::{read_int, ValueError};
+use crate::value::{read_int, read_list_header, skip_value, ValueError};
 
 /// Message type of a state update, sent by the pedal and echoed back on write.
 pub const TYPE_STATE_UPDATE: u16 = 0x0306;
@@ -73,6 +73,10 @@ pub enum MessageError {
         preset: u8,
         max: u8,
     },
+    /// Structure did not match what the captured fixtures show.
+    UnexpectedShape {
+        what: &'static str,
+    },
     Value(ValueError),
 }
 
@@ -97,6 +101,7 @@ impl std::fmt::Display for MessageError {
             Self::PresetOutOfRange { preset, max } => {
                 write!(f, "preset {preset} out of range (0..{max})")
             }
+            Self::UnexpectedShape { what } => write!(f, "unexpected message shape: {what}"),
             Self::Value(err) => write!(f, "{err}"),
         }
     }
@@ -160,6 +165,43 @@ pub fn write_state(state: &PedalState) -> Vec<u8> {
     ];
     payload.extend_from_slice(raw);
     encode_frame(&payload)
+}
+
+/// Index of the firmware-version element within the Hello response body list.
+///
+/// Derived from the captured response in `tests/fixtures/hello_response.bin`,
+/// whose own annotation identifies element 3 as the version.
+const HELLO_FIRMWARE_ELEMENT: u16 = 3;
+
+/// Extract the firmware version string from a Hello response body.
+///
+/// Returns e.g. `"1.1.3"`. Errors rather than guessing if the shape differs —
+/// a firmware update changing this layout must be loud, not silent.
+pub fn parse_hello(body: &[u8]) -> Result<String, MessageError> {
+    let header = parse_header(body)?;
+    let mut index = header.body_offset;
+
+    let (_, count) = read_list_header(body, &mut index)?;
+    if count <= HELLO_FIRMWARE_ELEMENT {
+        return Err(MessageError::UnexpectedShape {
+            what: "hello body list too short for a firmware element",
+        });
+    }
+
+    for _ in 0..HELLO_FIRMWARE_ELEMENT {
+        skip_value(body, &mut index)?;
+    }
+
+    let (_, parts) = read_list_header(body, &mut index)?;
+    let mut out = String::new();
+    for i in 0..parts {
+        let part = read_int(body, &mut index)?;
+        if i > 0 {
+            out.push('.');
+        }
+        out.push_str(&part.to_string());
+    }
+    Ok(out)
 }
 
 /// Parse a header without checking the declared size.
@@ -339,21 +381,19 @@ mod tests {
     /// Pins down the `0x80` tag-width discrepancy documented on
     /// [`crate::value::tag_width`].
     ///
-    /// Under the reference reading (`0x80` = tag + 1 byte) all three request
-    /// frames declare a size exactly one less than the bytes that follow. Under
-    /// the `protocol.md` reading (tag + 2) all three would be exactly consistent.
+    /// Requests carry one structural byte after the `0x80` field that responses
+    /// do not (`0x01` for Hello, `0x03` for RequestState and RequestPreset), so
+    /// a request's body is `size + 1`. Responses are exactly `size` — see
+    /// `tests/fixtures.rs::captured_hello_response_is_internally_consistent`,
+    /// which asserts that against real hardware bytes.
     ///
-    /// Three-for-three is not coincidence, so this is real evidence — but it is
-    /// outweighed by the fact that Builty's strict size check passes against
-    /// live hardware on *responses*, which is the only path where the width
-    /// actually affects our parsing. Requests are hardcoded arrays in both
-    /// references and never pass through their parsers, so nothing there would
-    /// have caught an inconsistent size field.
+    /// This asymmetry is why the requests once looked like evidence for a 2-byte
+    /// `0x80` tag: that reading absorbed the extra byte and made the arithmetic
+    /// come out even. See [`crate::value::tag_width`] for what settled it.
     ///
-    /// If this test ever starts failing, the ambiguity has been resolved — go
-    /// read `tag_width`.
+    /// We only ever parse responses, so [`parse_header`] is correct as written.
     #[test]
-    fn request_frames_size_field_discrepancy() {
+    fn requests_carry_one_extra_header_byte_that_responses_do_not() {
         let preset_payload =
             decode_frame(&request_preset(0, PresetDetail::Summary).unwrap()).unwrap();
 
@@ -363,7 +403,7 @@ mod tests {
             assert_eq!(
                 remaining,
                 header.size as usize + 1,
-                "expected the documented off-by-one for {payload:02x?}"
+                "request should carry exactly one extra byte: {payload:02x?}"
             );
         }
     }
