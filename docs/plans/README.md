@@ -57,8 +57,11 @@ Still open:
   one the design doc calls glitch-free — is accepted by a pedal in stomp mode
   and then silently reverted about a second later. Writing the preset into the
   *current* slot in place is what sticks, and costs one byte instead of three.
-  `PedalState::change_preset` now picks the route per slot. The A/B route is
-  retained but is **not** hardware-verified, because our pedal is in stomp mode.
+  `PedalState::change_preset` picks the route per slot. **Both routes are now
+  hardware-verified.** In A/B mode all three candidate strategies stick, and
+  stage-and-switch was kept there because it alone preserves the double
+  buffering — successive changes alternate `[B, A, B, A]` and the slot being
+  heard keeps its preset, which is what makes a change inaudible.
 
   A first version of the verification harness reported PASS for this: it read
   the pedal's immediate echo and returned before the revert. Confirming a write

@@ -145,9 +145,9 @@ fn successive_preset_changes_hold_the_slot_in_stomp_mode() {
 /// In A/B mode the double-buffering still applies: the slot being heard is
 /// never the one written.
 ///
-/// **Not verified against hardware.** Our pedal is in stomp mode and changing
-/// someone's rig mode to test is not ours to do. See
-/// `PedalState::change_preset`.
+/// Confirmed against hardware in A/B mode: successive changes settle
+/// `[B, A, B, A]`, and the slot that was playing still holds its preset each
+/// time. See `crates/pinex/examples/probe_ab_alternation.rs`.
 #[test]
 fn in_ab_mode_successive_changes_alternate_slots() {
     let (_sim, mut pedal) = sim_pedal();

@@ -254,16 +254,18 @@ impl PedalState {
     /// Writing the preset into the *current* slot in place does stick, and costs
     /// a single byte. So:
     ///
-    /// | Active slot | Route | Verified |
+    /// | Active slot | Route | Verified on firmware 1.3.17 |
     /// |---|---|---|
-    /// | C (stomp) | write in place | yes, on firmware 1.3.17 |
-    /// | A or B | stage into the other slot, then switch | no — see below |
+    /// | C (stomp) | write in place | yes — a slot switch is reverted here |
+    /// | A or B | stage into the other slot, then switch | yes |
     ///
-    /// The A/B route keeps the double-buffering the design doc calls for, since
-    /// loading a preset into the slot being heard can be audible. It is
-    /// unverified because our pedal is in stomp mode and putting someone's rig
-    /// into A/B mode to test is not ours to do. If A/B turns out to revert too,
-    /// the fix is to use the in-place route there as well.
+    /// Both routes are now confirmed against hardware. In A/B mode all three
+    /// candidate strategies stick, and the stage-and-switch one was kept because
+    /// it is the only one that preserves the double buffering: successive
+    /// changes alternate `[B, A, B, A]`, and the slot being heard still holds
+    /// what it held. That is what keeps a preset change inaudible, and it is
+    /// measured rather than assumed — see
+    /// `crates/pinex/examples/probe_ab_alternation.rs`.
     ///
     /// Returns the offsets written, sorted, for the [`diff_offsets`] assertion.
     pub fn change_preset(&mut self, preset: u8) -> Result<Vec<usize>, StateError> {
