@@ -15,8 +15,12 @@
 //! - ModemManager will probe a CDC-ACM device and send AT commands at it. Rule
 //!   this out first if the handshake misbehaves.
 
+pub mod pedal;
 pub mod reader;
+#[cfg(feature = "sim")]
+pub mod sim;
 pub mod transport;
 
+pub use pedal::Pedal;
 pub use reader::{PedalEvent, Reader};
 pub use transport::{Transport, TtyTransport};

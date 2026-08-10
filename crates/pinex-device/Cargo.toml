@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The PTY-backed pedal simulator. On by default so `cargo test` exercises it;
+# build the Pi image with --no-default-features to leave it out.
+default = ["sim"]
+sim = []
+
 [dependencies]
 pinex-proto.workspace = true
 nix.workspace = true

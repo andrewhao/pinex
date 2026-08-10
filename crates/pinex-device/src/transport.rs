@@ -48,6 +48,17 @@ impl TtyTransport {
         Ok(this)
     }
 
+    /// A second handle to the same port.
+    ///
+    /// The reader thread takes ownership of what it reads, so writes need their
+    /// own descriptor. Sharing one behind a lock would let a blocked read delay
+    /// a footswitch press.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            fd: self.fd.try_clone()?,
+        })
+    }
+
     /// `cfmakeraw` plus a 1 s inter-byte timeout.
     ///
     /// `VMIN = 0` with `VTIME = 10` means a read returns as soon as any bytes
