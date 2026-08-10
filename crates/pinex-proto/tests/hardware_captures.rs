@@ -90,6 +90,34 @@ fn preset_responses_carry_their_index_and_name() {
     }
 }
 
+/// The pedal assigns each preset an RGB colour. Reading it needs a shape-based
+/// search, not an offset — and the proof is that the same code reads both
+/// firmware generations, whose layouts differ.
+#[test]
+fn per_preset_colours_are_readable_on_both_firmwares() {
+    let real = body_of("hw_state_response.bin");
+    let header = parse_header(&real).unwrap();
+    let state = PedalState::from_body(real[header.body_offset..].to_vec()).unwrap();
+
+    let colors = state
+        .preset_colors()
+        .expect("real state must carry colours");
+    assert_eq!(colors.len(), 20, "one colour per preset");
+    // Read off the pedal: preset 1 is orange-ish, preset 3 pure green.
+    assert_eq!(colors[0], [255, 63, 0]);
+    assert_eq!(colors[2], [0, 255, 0]);
+    assert!(
+        colors.iter().any(|c| c != &colors[0]),
+        "colours must not all be identical — that would suggest a mis-parse"
+    );
+
+    // The 1.1.3 transcription has a different layout; the same code must cope.
+    let transcribed = fs::read(fixture("bodies/state_changed.body.bin")).unwrap();
+    let old = PedalState::from_body(transcribed[8..].to_vec()).unwrap();
+    let old_colors = old.preset_colors().expect("1.1.3 state must carry colours");
+    assert_eq!(old_colors.len(), 20);
+}
+
 /// Why `state.rs` has no start-relative offsets any more.
 ///
 /// The fields near the start of the state live inside a list whose element
@@ -109,6 +137,11 @@ fn start_relative_offsets_would_shift_between_firmwares() {
     assert_eq!(&real_body[..3], &[0xb9, 0x01, 0xb9]);
     assert_eq!(&transcribed_body[..3], &[0xb9, 0x01, 0xb9]);
     assert_eq!(real_body[3], 0x0e, "firmware 1.3.17 declares 14 elements");
+    // Builty/TonexOneController's start-relative constants (COLORS = 22) are
+    // correct for 1.3.17 and wrong for 1.1.3 — the reverse of what an earlier
+    // reading of ours concluded. Both facts are pinned here so neither is lost.
+    assert_eq!(real_body[22], 0xba, "COLORS=22 is right for 1.3.17");
+    assert_ne!(transcribed_body[22], 0xba, "...and wrong for 1.1.3");
     assert_eq!(
         transcribed_body[3], 0x0b,
         "firmware 1.1.3 declares 11 elements"

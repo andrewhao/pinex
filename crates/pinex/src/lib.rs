@@ -116,6 +116,9 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         snapshot.names = (0..pinex_proto::state::MAX_PRESETS)
             .map(|i| self.browser.name_at(i).map(str::to_string))
             .collect();
+        snapshot.colors = (0..pinex_proto::state::MAX_PRESETS)
+            .filter_map(|i| self.browser.color_at(i))
+            .collect();
     }
 
     /// Run until the player quits or `max_steps` elapses.
