@@ -4,5 +4,9 @@
 # pedal that answers a binary protocol, that is the classic footgun: the
 # handshake appears to work intermittently and nothing explains why. Rule it
 # out here rather than debugging it later.
+# TAG+="systemd" is what makes a dev-tonex.device unit exist. Without it the
+# service's `After=dev-tonex.device` orders against a unit systemd never
+# creates, so the ordering silently does nothing.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1963", ATTRS{idProduct}=="00d1", \
-  SYMLINK+="tonex", MODE="0660", GROUP="dialout", ENV{ID_MM_DEVICE_IGNORE}="1"
+  SYMLINK+="tonex", MODE="0660", GROUP="dialout", \
+  ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="systemd"

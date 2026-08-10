@@ -1,12 +1,27 @@
 # Deploying to a Raspberry Pi
 
+One command:
+
 ```sh
-cargo build --release --target aarch64-unknown-linux-gnu
-scp target/aarch64-unknown-linux-gnu/release/pinex pi:/usr/local/bin/
-scp deploy/99-tonex.rules pi:/etc/udev/rules.d/
-scp deploy/pinex.service pi:/etc/systemd/system/
-ssh pi 'sudo udevadm control --reload && sudo systemctl enable --now pinex'
+./deploy/deploy.sh pi@rpi3.local
 ```
+
+It detects whether the Pi runs 32- or 64-bit userland and builds the matching
+target — a Pi 3 can be either, and the wrong binary fails with a confusing
+"cannot execute binary file".
+
+## Toolchain
+
+Cross-compiling from macOS needs a linker for the target. `cargo-zigbuild` uses
+zig's bundled one, which needs no Docker daemon:
+
+```sh
+brew install zig
+cargo install cargo-zigbuild
+```
+
+The design doc named `cross` + Docker Desktop. Either works; zigbuild was chosen
+because it has no daemon to start and builds in ~30s.
 
 ## Build the Pi image without the simulator
 
