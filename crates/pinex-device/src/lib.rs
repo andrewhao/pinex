@@ -15,6 +15,6 @@
 //! - ModemManager will probe a CDC-ACM device and send AT commands at it. Rule
 //!   this out first if the handshake misbehaves.
 
-#![allow(unused_imports)]
+pub mod transport;
 
-use pinex_proto as _;
+pub use transport::{Transport, TtyTransport};
