@@ -190,6 +190,11 @@ impl<I: InputSource, R: Renderer> App<I, R> {
                 raw_hex: String::new(),
                 is_error: false,
             },
+            PedalEvent::WriteAcknowledged => FrameRecord {
+                summary: "write acknowledged (not yet confirmed)".into(),
+                raw_hex: String::new(),
+                is_error: false,
+            },
             PedalEvent::ParseError { raw, reason } => FrameRecord {
                 summary: reason.clone(),
                 raw_hex: pinex_web::hex(raw),

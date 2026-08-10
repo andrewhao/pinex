@@ -102,14 +102,17 @@ fn staging_a_preset_changes_what_the_simulator_is_playing() {
 
     assert_eq!(sim.active_preset(), 7, "the write must be observable");
     assert_eq!(sim.writes_accepted(), 1);
-    // The pedal was on slot C, which stages back into A.
-    assert_eq!(sim.active_slot().unwrap(), Slot::A);
+    // The captured pedal is in stomp mode. Real hardware reverts a slot switch
+    // there, so the preset is written into slot C in place and C stays active.
+    assert_eq!(sim.active_slot().unwrap(), Slot::C);
 }
 
-/// Repeated changes must alternate slots so the slot being heard is never
-/// overwritten while it plays — the glitch-free path, over the wire.
+/// In stomp mode the active slot must stay put across repeated changes.
+///
+/// Verified against hardware: a pedal on slot C accepts a slot switch and then
+/// reverts it, so the only route that sticks is writing slot C in place.
 #[test]
-fn successive_preset_changes_alternate_slots_over_the_wire() {
+fn successive_preset_changes_hold_the_slot_in_stomp_mode() {
     let (sim, mut pedal) = sim_pedal();
 
     pedal.request_state().unwrap();
@@ -132,8 +135,41 @@ fn successive_preset_changes_alternate_slots_over_the_wire() {
         slots.push(sim.active_slot().unwrap());
     }
 
-    // C stages into A, then A↔B from there.
-    assert_eq!(slots, vec![Slot::A, Slot::B, Slot::A, Slot::B]);
+    assert_eq!(
+        slots,
+        vec![Slot::C; 4],
+        "stomp mode must not switch slots — the pedal undoes it"
+    );
+}
+
+/// In A/B mode the double-buffering still applies: the slot being heard is
+/// never the one written.
+///
+/// **Not verified against hardware.** Our pedal is in stomp mode and changing
+/// someone's rig mode to test is not ours to do. See
+/// `PedalState::change_preset`.
+#[test]
+fn in_ab_mode_successive_changes_alternate_slots() {
+    let (_sim, mut pedal) = sim_pedal();
+
+    pedal.request_state().unwrap();
+    let mut state = match pedal.next_event(TIMEOUT).unwrap() {
+        PedalEvent::StateChanged(state) => state,
+        other => panic!("expected StateChanged, got {other:?}"),
+    };
+    // Put the captured state into A/B mode locally.
+    state.set_active_slot(Slot::A);
+
+    let mut slots = Vec::new();
+    for preset in [3u8, 11, 19] {
+        let before = state.active_slot().unwrap();
+        state.change_preset(preset).unwrap();
+        let after = state.active_slot().unwrap();
+        assert_ne!(after, before, "must move off the slot that was playing");
+        assert_eq!(state.active_preset().unwrap(), preset);
+        slots.push(after);
+    }
+    assert_eq!(slots, vec![Slot::B, Slot::A, Slot::B]);
 }
 
 /// The simulator must not invent replies for requests it has no capture for.

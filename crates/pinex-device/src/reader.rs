@@ -36,6 +36,11 @@ pub enum PedalEvent {
     /// decide when a sweep is "done", which is policy, not transport. The
     /// browser aggregates instead.
     PresetName(PresetInfo),
+    /// The pedal acknowledged a state write.
+    ///
+    /// **Not a confirmation.** The pedal sends this even when it is about to
+    /// revert the change; only a subsequent `StateChanged` is evidence.
+    WriteAcknowledged,
     /// A frame arrived that we could not interpret. Carries the bytes so the
     /// failure can be diagnosed — and turned into a fixture.
     ParseError {
@@ -192,6 +197,9 @@ fn interpret(frame: &[u8]) -> PedalEvent {
             Ok(info) => PedalEvent::PresetName(info),
             Err(e) => parse_error(&body, e),
         },
+        // Acknowledges a write; says nothing about whether it stuck. Swallowed
+        // deliberately — surfacing it would train people to read it as success.
+        MessageType::WriteAck => PedalEvent::WriteAcknowledged,
         MessageType::Unknown(code) => PedalEvent::ParseError {
             raw: body.to_vec(),
             reason: format!("unrecognised message type {code:#06x}"),

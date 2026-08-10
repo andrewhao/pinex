@@ -137,9 +137,9 @@ fn a_preset_change_built_from_real_state_touches_only_three_bytes() {
 
     let (frame, touched) = pinex_proto::message::set_preset(&state, 7).unwrap();
 
-    // Slot C stages back into A, so: A's preset, the active-slot byte, and the
-    // direct-monitoring byte. Nothing else.
-    assert_eq!(touched.len(), 3, "touched offsets: {touched:?}");
+    // Stomp mode: the preset goes into slot C in place, plus direct monitoring.
+    // Two offsets, not three — a slot switch here is reverted by the pedal.
+    assert_eq!(touched.len(), 2, "touched offsets: {touched:?}");
 
     // The frame must be a decodable state message whose body is the patched
     // state verbatim — never re-encoded.
@@ -171,8 +171,8 @@ fn a_preset_change_built_from_real_state_touches_only_three_bytes() {
         );
     }
     // The pedal already had direct monitoring on, so that intended write is a
-    // no-op here. Two of the three intended bytes actually move.
-    assert_eq!(differences.len(), 2, "changed offsets: {differences:?}");
+    // no-op here. Only the preset byte actually moves.
+    assert_eq!(differences.len(), 1, "changed offsets: {differences:?}");
 }
 
 /// Every preset the pedal can hold must produce a safe write from real state.
@@ -186,6 +186,7 @@ fn every_preset_index_produces_a_safe_write_from_real_state() {
         let (_, touched) = pinex_proto::message::set_preset(&state, preset)
             .unwrap_or_else(|e| panic!("preset {preset}: {e}"));
         assert!(touched.len() <= 3, "preset {preset} touched {touched:?}");
+        assert!(!touched.is_empty(), "preset {preset} touched nothing");
     }
     assert!(pinex_proto::message::set_preset(&state, 20).is_err());
 }
@@ -241,12 +242,21 @@ fn every_write_from_real_state_is_safe_in_all_four_ways() {
                 "{start_slot:?}/{target}: would mute the pedal"
             );
 
-            // And the slot being heard before the change is never the one we wrote.
-            assert_ne!(
-                next.active_slot().unwrap(),
-                start_slot,
-                "{start_slot:?}/{target}: overwrote the slot that was playing"
-            );
+            // 5. In A/B mode the slot being heard is never the one written —
+            // the double buffering. Stomp mode is the documented exception:
+            // hardware reverts a slot switch there, so the write stays in C.
+            match start_slot {
+                Slot::C => assert_eq!(
+                    next.active_slot().unwrap(),
+                    Slot::C,
+                    "{start_slot:?}/{target}: stomp mode must hold its slot"
+                ),
+                _ => assert_ne!(
+                    next.active_slot().unwrap(),
+                    start_slot,
+                    "{start_slot:?}/{target}: overwrote the slot that was playing"
+                ),
+            }
         }
     }
 }

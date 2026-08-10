@@ -145,6 +145,10 @@ impl PresetBrowser {
                 }
                 Vec::new()
             }
+            // Deliberately does not clear `pending`: the pedal acknowledges
+            // writes it then reverts, so treating this as confirmation would
+            // make the display claim a preset change that never happened.
+            PedalEvent::WriteAcknowledged => Vec::new(),
             PedalEvent::ParseError { reason, .. } => {
                 self.last_error = Some(reason.clone());
                 Vec::new()

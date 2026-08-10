@@ -47,17 +47,35 @@ Still open:
 - ~~The preset-name marker and the preset response type code~~ — **confirmed.**
   Type `0x0304`; the name is a 33-slot buffer followed by its true length.
 
-- **Whether the pedal accepts our WRITES. Not verified.** This is the one gap
-  that matters. `message::set_preset` is built from the pedal's own state bytes
-  and refuses to transmit if any byte outside the intended three would change,
-  and that logic is tested against real captured state — but no write has ever
-  been transmitted to hardware. The simulator accepts them because it is ours.
+- ~~Whether the pedal accepts our WRITES~~ — **confirmed, after correcting a
+  real bug.** Preset changes were verified end to end on hardware: the browser
+  switched the pedal from preset 2 to 3 and back, and the pedal reported each
+  change.
+
+  **What hardware overturned:** staging a preset into the inactive slot and
+  switching to it — the approach *both* reference implementations use, and the
+  one the design doc calls glitch-free — is accepted by a pedal in stomp mode
+  and then silently reverted about a second later. Writing the preset into the
+  *current* slot in place is what sticks, and costs one byte instead of three.
+  `PedalState::change_preset` now picks the route per slot. The A/B route is
+  retained but is **not** hardware-verified, because our pedal is in stomp mode.
+
+  A first version of the verification harness reported PASS for this: it read
+  the pedal's immediate echo and returned before the revert. Confirming a write
+  means letting the pedal settle and asking again.
+
+- **Message type `0x0005`.** Five bytes, empty body, sent after a state write.
+  Undocumented anywhere we have seen. Recognised as `WriteAck` so it stops
+  looking like a parse failure, but nothing is inferred from it — the pedal
+  sends it even when it is about to revert the change.
 - **The pedal stops answering after sustained traffic.** Observed on 1.3.17:
   after capturing twenty presets back to back, the pedal went silent to
-  everything including Hello, while still enumerating on USB and presenting its
-  tty. Reads return zero bytes, writes succeed, DTR/RTS are already asserted, and
-  the device node re-enumerates periodically. A power cycle is the suspected fix
-  but is unconfirmed. Bulk preset fetches may need pacing.
+  everything including Hello, while still enumerating on USB (session ID
+  unchanged) and presenting its tty. Reads returned zero bytes, writes
+  succeeded, DTR/RTS were already asserted; a 1200-baud touch and the blocking
+  `/dev/tty.*` node made no difference, and the latter blocked on carrier
+  detect. **A power cycle fixed it** — confirmed. Bulk preset fetches may want
+  pacing, and reconnect handling should assume this can happen mid-set.
 - **`offset_from_start`** — removed entirely. The fields it addressed shift
   between firmwares; anything near the start of the state must be walked.
 - **Anything touching a Pi, display, or GPIO.** The seams exist and are tested

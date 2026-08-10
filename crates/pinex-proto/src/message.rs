@@ -13,6 +13,15 @@ pub const TYPE_STATE_UPDATE: u16 = 0x0306;
 pub const TYPE_HELLO: u16 = 0x02;
 /// Message type used to *request* preset details.
 pub const TYPE_PRESET_REQUEST: u16 = 0x0300;
+/// Message type of the pedal's acknowledgement of a state write.
+///
+/// A five-byte message with an empty body (`b9 03 05 00 0b`), sent after a state
+/// write. Undocumented anywhere we have seen; observed on firmware 1.3.17 and
+/// identified only by when it arrives. It is recognised so it stops being
+/// reported as a parse failure, but nothing is inferred from it — notably it is
+/// **not** evidence the write stuck, since the pedal sends it even when it is
+/// about to revert the change.
+pub const TYPE_WRITE_ACK: u16 = 0x0005;
 /// Message type of a preset-details *response*.
 ///
 /// Confirmed against our own pedal (firmware 1.3.17): every reply to
@@ -28,6 +37,8 @@ pub enum MessageType {
     Hello,
     StateUpdate,
     PresetResponse,
+    /// Acknowledgement of a state write. Carries no payload and no promise.
+    WriteAck,
     Unknown(u16),
 }
 
@@ -37,6 +48,7 @@ impl MessageType {
             TYPE_HELLO => Self::Hello,
             TYPE_STATE_UPDATE => Self::StateUpdate,
             TYPE_PRESET_RESPONSE => Self::PresetResponse,
+            TYPE_WRITE_ACK => Self::WriteAck,
             other => Self::Unknown(other),
         }
     }
@@ -225,8 +237,9 @@ pub fn parse_hello(body: &[u8]) -> Result<String, MessageError> {
 /// pedal mid-set, so it is deliberately paranoid:
 ///
 /// 1. Start from the pedal's own most recent state, byte for byte.
-/// 2. Stage the preset into the slot that is *not* playing, then switch to it —
-///    the glitch-free path described on [`crate::state::Slot::other`].
+/// 2. Change the preset by whichever route the pedal honours — see
+///    [`crate::state::PedalState::change_preset`]. In stomp mode that is an
+///    in-place write; the documented stage-and-switch is reverted by hardware.
 /// 3. Force direct monitoring on, or USB can leave the pedal silent.
 /// 4. **Diff the result against the original and refuse to transmit if any byte
 ///    outside the intended set changed.** Step 4 is the point: it converts "we
@@ -249,11 +262,11 @@ pub fn set_preset(current: &PedalState, preset: u8) -> Result<(Vec<u8>, Vec<usiz
     }
 
     let mut next = current.clone();
-    let intended =
-        next.stage_preset_in_inactive_slot(preset)
-            .map_err(|_| MessageError::UnexpectedShape {
-                what: "could not resolve the active slot in the current state",
-            })?;
+    let intended = next
+        .change_preset(preset)
+        .map_err(|_| MessageError::UnexpectedShape {
+            what: "could not resolve the active slot in the current state",
+        })?;
 
     let actual = crate::state::diff_offsets(current.raw(), next.raw());
     if let Some(&stray) = actual.iter().find(|off| !intended.contains(off)) {

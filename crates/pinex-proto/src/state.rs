@@ -239,8 +239,53 @@ impl PedalState {
         at
     }
 
+    /// Change the playing preset, by whichever route this pedal actually honours.
+    ///
+    /// **Stomp mode (active slot C) needs the opposite of the documented
+    /// approach, and hardware is how we found out.** Staging into another slot
+    /// and switching to it — what both reference implementations do — is
+    /// accepted by the pedal and then silently reverted about a second later:
+    ///
+    /// ```text
+    /// StateChanged: preset 0, slot A   <- our write landed
+    /// StateChanged: preset 1, slot C   <- the pedal put it back
+    /// ```
+    ///
+    /// Writing the preset into the *current* slot in place does stick, and costs
+    /// a single byte. So:
+    ///
+    /// | Active slot | Route | Verified |
+    /// |---|---|---|
+    /// | C (stomp) | write in place | yes, on firmware 1.3.17 |
+    /// | A or B | stage into the other slot, then switch | no — see below |
+    ///
+    /// The A/B route keeps the double-buffering the design doc calls for, since
+    /// loading a preset into the slot being heard can be audible. It is
+    /// unverified because our pedal is in stomp mode and putting someone's rig
+    /// into A/B mode to test is not ours to do. If A/B turns out to revert too,
+    /// the fix is to use the in-place route there as well.
+    ///
+    /// Returns the offsets written, sorted, for the [`diff_offsets`] assertion.
+    pub fn change_preset(&mut self, preset: u8) -> Result<Vec<usize>, StateError> {
+        match self.active_slot()? {
+            Slot::C => {
+                let mut touched = vec![
+                    self.set_slot_preset(Slot::C, preset)?,
+                    self.force_direct_monitoring(),
+                ];
+                touched.sort_unstable();
+                touched.dedup();
+                Ok(touched)
+            }
+            Slot::A | Slot::B => self.stage_preset_in_inactive_slot(preset),
+        }
+    }
+
     /// Stage `preset` into the inactive slot and switch to it — the glitch-free
     /// preset change described on [`Slot::other`].
+    ///
+    /// Only correct in A/B mode. See [`Self::change_preset`], which picks the
+    /// route the pedal actually honours.
     ///
     /// Returns the offsets written, sorted, for the [`diff_offsets`] assertion.
     pub fn stage_preset_in_inactive_slot(&mut self, preset: u8) -> Result<Vec<usize>, StateError> {

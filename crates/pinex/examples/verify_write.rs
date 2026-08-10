@@ -53,12 +53,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = attempt_switch(&mut pedal, &original, target);
 
     // Restore first, report second: the pedal must go back regardless.
+    // Give the pedal a moment to settle before reading state to restore from.
+    std::thread::sleep(Duration::from_millis(800));
     println!("<-- restoring preset {}", original_preset + 1);
     let restored = match fetch_state(&mut pedal) {
         Ok(current) => match message::set_preset(&current, original_preset) {
             Ok((frame, _)) => {
                 pedal.send_frame(&frame)?;
-                matches!(await_state(&mut pedal), Ok(s) if s.active_preset() == Ok(original_preset))
+                std::thread::sleep(Duration::from_millis(1500));
+                matches!(fetch_state(&mut pedal), Ok(s) if s.active_preset() == Ok(original_preset))
             }
             Err(e) => {
                 eprintln!("!! could not build the restore frame: {e}");
@@ -172,29 +175,37 @@ fn attempt_switch(
 
     pedal.send_frame(&frame)?;
     let echoed = await_state(pedal)?;
-    let observed = echoed.active_preset()?;
+
+    // Do NOT trust the first reply. The pedal accepts a write, echoes the new
+    // state, and can revert it about a second later — an earlier version of
+    // this harness returned here and reported a PASS for a change that did not
+    // stick. Let it settle, then ask again.
+    std::thread::sleep(Duration::from_millis(1500));
+    let settled = fetch_state(pedal)?;
+    let observed = settled.active_preset()?;
 
     if observed != target {
         return Err(format!(
-            "asked for preset {}, pedal reports {}",
+            "asked for preset {}; pedal echoed {} then settled on {} — the write did not stick",
             target + 1,
+            echoed.active_preset()? + 1,
             observed + 1
         )
         .into());
     }
 
     // The pedal must not have been resized or mangled by our write.
-    if echoed.len() != from.len() {
+    if settled.len() != from.len() {
         return Err(format!(
             "state changed length: sent {} bytes, got {} back",
             from.len(),
-            echoed.len()
+            settled.len()
         )
         .into());
     }
 
     // Direct monitoring must still be on, or the pedal is silent over USB.
-    if echoed.direct_monitoring() != 1 {
+    if settled.direct_monitoring() != 1 {
         return Err("direct monitoring is off after the write — the pedal would be muted".into());
     }
 
