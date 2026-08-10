@@ -57,7 +57,11 @@ dependencies = [
 name = "pinex"
 version = "0.1.0"
 dependencies = [
+ "pinex-device",
+ "pinex-input",
  "pinex-proto",
+ "pinex-ui",
+ "pinex-web",
 ]
 
 [[package]]
@@ -86,6 +90,8 @@ dependencies = [
 name = "pinex-ui"
 version = "0.1.0"
 dependencies = [
+ "pinex-device",
+ "pinex-input",
  "pinex-proto",
 ]
 

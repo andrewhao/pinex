@@ -82,6 +82,15 @@ impl Pedal {
         self.writer.write_all(&message::write_state(state))
     }
 
+    /// Send an already-framed message.
+    ///
+    /// The escape hatch for frames built elsewhere — notably
+    /// `pinex_proto::message::set_preset`, which does its own verification
+    /// before handing the bytes over.
+    pub fn send_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+        self.writer.write_all(frame)
+    }
+
     /// Wait for the next event.
     pub fn next_event(&self, timeout: Duration) -> Result<PedalEvent, RecvTimeoutError> {
         self.events.recv_timeout(timeout)

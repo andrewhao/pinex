@@ -13,31 +13,22 @@
 //! [`diff_offsets`] exists so a caller can assert that a write touched exactly
 //! the offsets it intended, and nothing else.
 
-/// Offsets counted from the start of the state body.
-///
-/// Corrected against the captured message in
-/// `tests/fixtures/bodies/state_changed.body.bin`; the previous values were all
-/// five bytes too high and addressed the wrong fields. `tests/state_offsets.rs`
-/// pins each one to the annotation its capture carries.
-///
-/// Unlike [`offset_from_end`], these are read-only: nothing in the write path
-/// patches through them, so the earlier error could not have corrupted a pedal.
-pub mod offset_from_start {
-    /// f32: -15.0 .. +15.0. Points at the value bytes, past the `0x88` tag.
-    pub const INPUT_TRIM: usize = 5;
-    /// `0x00` = A/B mode, `0x01` = stomp mode.
-    ///
-    /// **Inferred, not annotated.** The capture leaves this byte unlabelled;
-    /// it is identified only by sitting immediately before `cabsimBypass`, so
-    /// it is the least trustworthy constant here.
-    pub const STOMP_MODE: usize = 14;
-    /// `0x00` = off, `0x01` = on
-    pub const CAB_BYPASS: usize = 15;
-    /// `0x00` = mute, `0x01` = through
-    pub const TUNING_MODE: usize = 16;
-    /// The `0xBA` header of the per-preset RGB colour array.
-    pub const COLORS: usize = 17;
-}
+//! ## Why there are no offsets counted from the *start* of the body
+//!
+//! There used to be. They were wrong twice over, and the second failure is the
+//! instructive one: the fields near the start of the state live inside a list
+//! whose length changes between firmware versions. Our own pedal (1.3.17) opens
+//! that list with `b9 0e` — fourteen elements — where the published 1.1.3 dump
+//! has `b9 0b`, eleven. Every start-relative offset therefore shifts, silently,
+//! on a firmware update, and reads a neighbouring field instead of erroring.
+//!
+//! The end-relative offsets below do not have this problem: they have now been
+//! confirmed against both firmware generations. Anything near the start of the
+//! body must be located by *walking* the structure with
+//! [`crate::value::skip_value`], never by a constant.
+//!
+//! `tests/hardware_captures.rs::start_relative_offsets_would_shift_between_firmwares`
+//! pins this so the constants cannot quietly come back.
 
 /// Offsets counted back from the end of the state body, as `len - N`.
 ///
@@ -198,12 +189,21 @@ impl PedalState {
         self.raw[self.index_from_end(offset_from_end::BYPASS_MODE)]
     }
 
-    pub fn stomp_mode(&self) -> u8 {
-        self.raw[offset_from_start::STOMP_MODE]
+    /// A4 tuning reference in Hz (e.g. 440).
+    pub fn tuning_reference_hz(&self) -> u16 {
+        let at = self.index_from_end(offset_from_end::TUNING_REF);
+        u16::from_le_bytes([self.raw[at], self.raw[at + 1]])
     }
 
-    pub fn cab_bypass(&self) -> u8 {
-        self.raw[offset_from_start::CAB_BYPASS]
+    /// Tempo in beats per minute.
+    pub fn tempo_bpm(&self) -> f32 {
+        let at = self.index_from_end(offset_from_end::BPM);
+        f32::from_le_bytes([
+            self.raw[at],
+            self.raw[at + 1],
+            self.raw[at + 2],
+            self.raw[at + 3],
+        ])
     }
 
     /// Load `preset` into `slot`. Returns the offset written.
@@ -239,8 +239,53 @@ impl PedalState {
         at
     }
 
+    /// Change the playing preset, by whichever route this pedal actually honours.
+    ///
+    /// **Stomp mode (active slot C) needs the opposite of the documented
+    /// approach, and hardware is how we found out.** Staging into another slot
+    /// and switching to it — what both reference implementations do — is
+    /// accepted by the pedal and then silently reverted about a second later:
+    ///
+    /// ```text
+    /// StateChanged: preset 0, slot A   <- our write landed
+    /// StateChanged: preset 1, slot C   <- the pedal put it back
+    /// ```
+    ///
+    /// Writing the preset into the *current* slot in place does stick, and costs
+    /// a single byte. So:
+    ///
+    /// | Active slot | Route | Verified |
+    /// |---|---|---|
+    /// | C (stomp) | write in place | yes, on firmware 1.3.17 |
+    /// | A or B | stage into the other slot, then switch | no — see below |
+    ///
+    /// The A/B route keeps the double-buffering the design doc calls for, since
+    /// loading a preset into the slot being heard can be audible. It is
+    /// unverified because our pedal is in stomp mode and putting someone's rig
+    /// into A/B mode to test is not ours to do. If A/B turns out to revert too,
+    /// the fix is to use the in-place route there as well.
+    ///
+    /// Returns the offsets written, sorted, for the [`diff_offsets`] assertion.
+    pub fn change_preset(&mut self, preset: u8) -> Result<Vec<usize>, StateError> {
+        match self.active_slot()? {
+            Slot::C => {
+                let mut touched = vec![
+                    self.set_slot_preset(Slot::C, preset)?,
+                    self.force_direct_monitoring(),
+                ];
+                touched.sort_unstable();
+                touched.dedup();
+                Ok(touched)
+            }
+            Slot::A | Slot::B => self.stage_preset_in_inactive_slot(preset),
+        }
+    }
+
     /// Stage `preset` into the inactive slot and switch to it — the glitch-free
     /// preset change described on [`Slot::other`].
+    ///
+    /// Only correct in A/B mode. See [`Self::change_preset`], which picks the
+    /// route the pedal actually honours.
     ///
     /// Returns the offsets written, sorted, for the [`diff_offsets`] assertion.
     pub fn stage_preset_in_inactive_slot(&mut self, preset: u8) -> Result<Vec<usize>, StateError> {

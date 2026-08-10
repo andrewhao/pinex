@@ -1,0 +1,8 @@
+# Stable name for the Tonex ONE, and keep ModemManager away from it.
+#
+# ModemManager probes any CDC-ACM device and sends AT commands at it. On a
+# pedal that answers a binary protocol, that is the classic footgun: the
+# handshake appears to work intermittently and nothing explains why. Rule it
+# out here rather than debugging it later.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1963", ATTRS{idProduct}=="00d1", \
+  SYMLINK+="tonex", MODE="0660", GROUP="dialout", ENV{ID_MM_DEVICE_IGNORE}="1"

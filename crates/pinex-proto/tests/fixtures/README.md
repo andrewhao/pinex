@@ -37,3 +37,25 @@ did.
 Record the pedal's firmware version alongside any capture — the 1.8.0 release
 broke third-party controllers, so a fixture without a version is hard to
 interpret later.
+
+## Captures from our own pedal (firmware 1.3.17)
+
+These came off real hardware over USB, via
+`cargo run -p pinex-device --example capture`. They supersede the
+transcriptions above wherever the two disagree.
+
+| File | Request | Establishes |
+|---|---|---|
+| `hw_hello_fw1_3_17.bin` | `hello` | Firmware 1.3.17; Hello response shape unchanged since 1.1.3 |
+| `hw_state_response.bin` | `state` | A **framed** state response with a real CRC — the capture this directory asked for. Confirms `0x80` = 1 byte a second time (`80 9f` = 159 = exact body length) and validates every end-relative offset |
+| `hw_preset0_response.bin` | `preset:0` | Preset response type code `0x0304`, previously unconfirmed; name layout |
+| `hw_preset15_response.bin` | `preset:15` | Name layout is stable across presets and index round-trips |
+
+**What these changed.** Two things the earlier documents got wrong:
+
+1. The preset response type code was unknown. It is `0x0304`.
+2. Start-relative state offsets are **not** firmware-stable. 1.3.17 opens the
+   state's inner list with `b9 0e` (14 elements) where 1.1.3 has `b9 0b` (11).
+   Every constant offset into that region shifts silently. They have been
+   removed from `state.rs`; see the note there. End-relative offsets are
+   confirmed on both firmwares and are what the write path uses.

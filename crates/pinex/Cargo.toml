@@ -7,3 +7,11 @@ repository.workspace = true
 
 [dependencies]
 pinex-proto.workspace = true
+pinex-device = { workspace = true, features = ["sim"] }
+pinex-input.workspace = true
+pinex-ui.workspace = true
+pinex-web.workspace = true
+
+[dev-dependencies]
+pinex-web.workspace = true
+pinex-device = { workspace = true, features = ["sim"] }

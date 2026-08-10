@@ -17,5 +17,9 @@ repository = "https://github.com/andrewhao/pinex"
 
 [workspace.dependencies]
 pinex-proto = { path = "crates/pinex-proto" }
+pinex-device = { path = "crates/pinex-device", default-features = false }
+pinex-input = { path = "crates/pinex-input" }
+pinex-ui = { path = "crates/pinex-ui" }
+pinex-web = { path = "crates/pinex-web" }
 crc = "3"
 nix = { version = "0.29", features = ["term", "fs", "poll"] }

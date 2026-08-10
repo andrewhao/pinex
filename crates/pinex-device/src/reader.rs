@@ -15,7 +15,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use pinex_proto::message::{parse_header, parse_hello, MessageType};
+use pinex_proto::message::{parse_header, parse_hello, parse_preset_name, MessageType, PresetInfo};
 use pinex_proto::state::PedalState;
 use pinex_proto::{decode_frame, FrameAccumulator};
 
@@ -29,13 +29,37 @@ pub enum PedalEvent {
     },
     Disconnected,
     StateChanged(PedalState),
-    PresetNames(Vec<String>),
+    /// One preset's index and name.
+    ///
+    /// The design doc modelled this as `PresetNames(Vec<String>)`, but the pedal
+    /// answers one preset per request; batching them here would make the reader
+    /// decide when a sweep is "done", which is policy, not transport. The
+    /// browser aggregates instead.
+    PresetName(PresetInfo),
+    /// The pedal acknowledged a state write.
+    ///
+    /// **Not a confirmation.** The pedal sends this even when it is about to
+    /// revert the change; only a subsequent `StateChanged` is evidence.
+    WriteAcknowledged,
     /// A frame arrived that we could not interpret. Carries the bytes so the
     /// failure can be diagnosed — and turned into a fixture.
     ParseError {
         raw: Vec<u8>,
         reason: String,
     },
+}
+
+/// Something we want the pedal to do.
+///
+/// Emitted by the UI/input layers, executed by whoever owns the write half of
+/// the port. Kept separate from [`PedalEvent`] so a request can never be
+/// mistaken for a fact: a `SetPreset` is an intention, and only the
+/// [`PedalEvent::StateChanged`] that follows is evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    RequestState,
+    RequestPreset(u8),
+    SetPreset(u8),
 }
 
 /// A running reader thread. Dropping this asks the thread to stop and joins it.
@@ -84,9 +108,22 @@ impl Drop for Reader {
     }
 }
 
+/// A zero-byte read faster than this is not an idle timeout.
+///
+/// The transport's VTIME is 1 s, so a genuine idle read takes roughly that long.
+/// A closed device returns immediately.
+const EOF_SUSPICION_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// How many suspiciously fast zero-reads before declaring the pedal gone.
+///
+/// More than one so a scheduling hiccup cannot fake an unplug.
+const EOF_CONSECUTIVE_ZEROS: u32 = 3;
+
 fn run<T: Transport>(mut transport: T, events: Sender<PedalEvent>, stop: Arc<AtomicBool>) {
     let mut acc = FrameAccumulator::new();
     let mut buf = [0u8; 4096];
+    let mut fast_zero_reads = 0u32;
+    let mut idle_started = std::time::Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         let n = match transport.read(&mut buf) {
@@ -99,12 +136,29 @@ fn run<T: Transport>(mut transport: T, events: Sender<PedalEvent>, stop: Arc<Ato
         };
 
         if n == 0 {
-            // An idle timeout, not end-of-stream. Any half-frame still sitting
-            // in the accumulator is now stale — the pedal does not pause
-            // mid-frame — so drop it rather than let it corrupt the next one.
+            // Zero bytes is ambiguous: with VMIN=0/VTIME=10 it means either
+            // "nothing arrived for a second" or "the device is gone". Timing
+            // tells them apart — an idle timeout takes the full VTIME window,
+            // while a closed device returns instantly, over and over.
+            if idle_started.elapsed() < EOF_SUSPICION_WINDOW {
+                fast_zero_reads += 1;
+                if fast_zero_reads >= EOF_CONSECUTIVE_ZEROS {
+                    let _ = events.send(PedalEvent::Disconnected);
+                    return;
+                }
+            } else {
+                fast_zero_reads = 0;
+            }
+
+            // Any half-frame still sitting in the accumulator is now stale —
+            // the pedal does not pause mid-frame — so drop it rather than let
+            // it corrupt the next one.
             acc.flush_stale();
+            idle_started = std::time::Instant::now();
             continue;
         }
+        fast_zero_reads = 0;
+        idle_started = std::time::Instant::now();
 
         for frame in acc.push(&buf[..n]) {
             // A closed receiver means every subscriber is gone; nothing left to
@@ -139,8 +193,13 @@ fn interpret(frame: &[u8]) -> PedalEvent {
                 Err(e) => parse_error(&body, e),
             }
         }
-        // Preset responses use a type code we have not confirmed against
-        // hardware, so anything else is reported rather than guessed at.
+        MessageType::PresetResponse => match parse_preset_name(&body) {
+            Ok(info) => PedalEvent::PresetName(info),
+            Err(e) => parse_error(&body, e),
+        },
+        // Acknowledges a write; says nothing about whether it stuck. Swallowed
+        // deliberately — surfacing it would train people to read it as success.
+        MessageType::WriteAck => PedalEvent::WriteAcknowledged,
         MessageType::Unknown(code) => PedalEvent::ParseError {
             raw: body.to_vec(),
             reason: format!("unrecognised message type {code:#06x}"),

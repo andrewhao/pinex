@@ -22,5 +22,5 @@ pub mod sim;
 pub mod transport;
 
 pub use pedal::Pedal;
-pub use reader::{PedalEvent, Reader};
+pub use reader::{Command, PedalEvent, Reader};
 pub use transport::{Transport, TtyTransport};
