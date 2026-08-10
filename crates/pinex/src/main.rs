@@ -43,6 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pedal = Pedal::open(&device)?;
     let mut app = App::new(pedal, StdinInput::new(), ConsoleRenderer);
 
+    // The debug page is how a firmware change gets discovered, so it runs by
+    // default. Port 0 or a bind failure must not stop the pedal working.
+    let web = pinex_web::DebugServer::start(web_port(), app.snapshot());
+    match &web {
+        Ok(server) => eprintln!("debug page: http://localhost:{}/", server.addr().port()),
+        Err(e) => eprintln!("! debug page unavailable: {e}"),
+    }
+
     app.start()?;
     eprintln!("{}", USAGE);
 
@@ -55,6 +63,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 const USAGE: &str = "keys: n/Enter = next, p = prev, s = select, r = refresh, q = quit";
+
+/// Debug page port. `PINEX_WEB_PORT=0` picks a free one; unset uses 8080.
+fn web_port() -> u16 {
+    std::env::var("PINEX_WEB_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8080)
+}
 
 /// Find the pedal's tty.
 ///

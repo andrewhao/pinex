@@ -1,0 +1,18 @@
+[Unit]
+Description=Pinex — Tonex ONE preset browser
+# The udev rule above creates /dev/tonex; wait for it rather than racing it.
+After=dev-tonex.device
+Wants=dev-tonex.device
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pinex /dev/tonex
+Restart=always
+# A pedal unplugged mid-set should come back without hammering USB.
+RestartSec=2
+User=pinex
+SupplementaryGroups=dialout
+Environment=PINEX_WEB_PORT=8080
+
+[Install]
+WantedBy=multi-user.target

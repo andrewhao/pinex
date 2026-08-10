@@ -20,6 +20,8 @@ use pinex_input::{InputEvent, InputSource};
 use pinex_proto::message;
 use pinex_proto::state::PedalState;
 use pinex_ui::{PresetBrowser, Renderer};
+use pinex_web::{FrameRecord, Snapshot};
+use std::sync::{Arc, Mutex};
 
 /// How long to wait for input before servicing pedal events.
 const TICK: Duration = Duration::from_millis(50);
@@ -34,6 +36,8 @@ pub struct App<I: InputSource, R: Renderer> {
     last_state: Option<PedalState>,
     /// Reported rather than swallowed, and surfaced on the display.
     pub errors: Vec<String>,
+    /// Shared with the debug web page, when one is running.
+    snapshot: Arc<Mutex<Snapshot>>,
 }
 
 impl<I: InputSource, R: Renderer> App<I, R> {
@@ -45,7 +49,13 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             browser: PresetBrowser::new(),
             last_state: None,
             errors: Vec::new(),
+            snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
+    }
+
+    /// The snapshot the debug page renders. Hand this to `DebugServer::start`.
+    pub fn snapshot(&self) -> Arc<Mutex<Snapshot>> {
+        Arc::clone(&self.snapshot)
     }
 
     /// Open the conversation. The pedal answers with its firmware version,
@@ -72,6 +82,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             if let PedalEvent::StateChanged(state) = &event {
                 self.last_state = Some(state.clone());
             }
+            self.log_frame(&event);
             commands.extend(self.browser.apply(&event));
         }
 
@@ -82,7 +93,29 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         }
 
         self.renderer.render(&self.browser.view());
+        self.publish_snapshot();
         true
+    }
+
+    /// Mirror the browser into the shape the debug page renders.
+    fn publish_snapshot(&self) {
+        let view = self.browser.view();
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        snapshot.connected = view.connection.is_connected();
+        snapshot.firmware = match view.connection {
+            pinex_ui::Connection::Connected { firmware } => Some(firmware.clone()),
+            pinex_ui::Connection::Disconnected => None,
+        };
+        snapshot.active_preset = view.active;
+        snapshot.active_name = view.active_name.map(str::to_string);
+        snapshot.cursor = view.cursor;
+        snapshot.names = (0..pinex_proto::state::MAX_PRESETS)
+            .map(|i| self.browser.name_at(i).map(str::to_string))
+            .collect();
     }
 
     /// Run until the player quits or `max_steps` elapses.
@@ -125,6 +158,48 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             }
         }
         done(&self.browser)
+    }
+
+    /// Record every event on the debug page, errors with their raw bytes.
+    ///
+    /// This is the point of the page: a firmware change shows up here as hex,
+    /// not as a pedal that mysteriously stops responding.
+    fn log_frame(&self, event: &PedalEvent) {
+        let record = match event {
+            PedalEvent::Connected { firmware } => FrameRecord {
+                summary: format!("Connected — firmware {firmware}"),
+                raw_hex: String::new(),
+                is_error: false,
+            },
+            PedalEvent::Disconnected => FrameRecord {
+                summary: "Disconnected".into(),
+                raw_hex: String::new(),
+                is_error: true,
+            },
+            PedalEvent::StateChanged(state) => FrameRecord {
+                summary: format!(
+                    "StateChanged — preset {:?}, slot {:?}",
+                    state.active_preset(),
+                    state.active_slot()
+                ),
+                raw_hex: pinex_web::hex(state.raw()),
+                is_error: false,
+            },
+            PedalEvent::PresetName(info) => FrameRecord {
+                summary: format!("Preset {:02} — {}", info.index + 1, info.name),
+                raw_hex: String::new(),
+                is_error: false,
+            },
+            PedalEvent::ParseError { raw, reason } => FrameRecord {
+                summary: reason.clone(),
+                raw_hex: pinex_web::hex(raw),
+                is_error: true,
+            },
+        };
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_frame(record);
     }
 
     fn execute(&mut self, command: Command) -> Result<(), String> {
