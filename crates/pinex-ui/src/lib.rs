@@ -8,6 +8,8 @@
 //! major version when this lands; a mismatch there is expected setup work rather
 //! than a surprise.
 
-#![allow(unused_imports)]
+pub mod browser;
+pub mod render;
 
-use pinex_proto as _;
+pub use browser::{Connection, InputEvent, PresetBrowser, View};
+pub use render::{lines, ConsoleRenderer, RecordingRenderer, Renderer};

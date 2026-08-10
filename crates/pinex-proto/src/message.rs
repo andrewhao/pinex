@@ -82,6 +82,11 @@ pub enum MessageError {
     UnexpectedShape {
         what: &'static str,
     },
+    /// A write would have modified a byte outside the intended set. Never sent.
+    UnsafeWrite {
+        offset: usize,
+        intended: Vec<usize>,
+    },
     Value(ValueError),
 }
 
@@ -107,6 +112,11 @@ impl std::fmt::Display for MessageError {
                 write!(f, "preset {preset} out of range (0..{max})")
             }
             Self::UnexpectedShape { what } => write!(f, "unexpected message shape: {what}"),
+            Self::UnsafeWrite { offset, intended } => write!(
+                f,
+                "refusing to transmit: write would change offset {offset}, \
+                 which is not among the intended offsets {intended:?}"
+            ),
             Self::Value(err) => write!(f, "{err}"),
         }
     }
@@ -207,6 +217,53 @@ pub fn parse_hello(body: &[u8]) -> Result<String, MessageError> {
         out.push_str(&part.to_string());
     }
     Ok(out)
+}
+
+/// Build the frame that switches the pedal to `preset`, verifying it first.
+///
+/// This is the only write Pinex performs, and it is the one that can break a
+/// pedal mid-set, so it is deliberately paranoid:
+///
+/// 1. Start from the pedal's own most recent state, byte for byte.
+/// 2. Stage the preset into the slot that is *not* playing, then switch to it —
+///    the glitch-free path described on [`crate::state::Slot::other`].
+/// 3. Force direct monitoring on, or USB can leave the pedal silent.
+/// 4. **Diff the result against the original and refuse to transmit if any byte
+///    outside the intended set changed.** Step 4 is the point: it converts "we
+///    believe we only touched three bytes" into something checked at runtime,
+///    on every write, including against firmware we have never seen.
+///
+/// The check is a *subset* test, not equality, and real hardware is why. The
+/// pedal we captured already had direct monitoring on, so forcing it on changed
+/// nothing — three intended offsets, two actual differences. Demanding equality
+/// rejected a perfectly safe write. What matters is that nothing unintended
+/// moved, never that everything intended did.
+///
+/// Returns the framed bytes ready for the wire, and the offsets we intended.
+pub fn set_preset(current: &PedalState, preset: u8) -> Result<(Vec<u8>, Vec<usize>), MessageError> {
+    if preset >= MAX_PRESETS {
+        return Err(MessageError::PresetOutOfRange {
+            preset,
+            max: MAX_PRESETS,
+        });
+    }
+
+    let mut next = current.clone();
+    let intended =
+        next.stage_preset_in_inactive_slot(preset)
+            .map_err(|_| MessageError::UnexpectedShape {
+                what: "could not resolve the active slot in the current state",
+            })?;
+
+    let actual = crate::state::diff_offsets(current.raw(), next.raw());
+    if let Some(&stray) = actual.iter().find(|off| !intended.contains(off)) {
+        return Err(MessageError::UnsafeWrite {
+            offset: stray,
+            intended: intended.clone(),
+        });
+    }
+
+    Ok((write_state(&next), intended))
 }
 
 /// A preset's index and display name, as reported by the pedal.

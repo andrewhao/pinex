@@ -10,7 +10,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pinex_proto::message::{parse_header, parse_hello, parse_preset_name, MessageType};
+use pinex_proto::message::{
+    parse_header, parse_header_unvalidated, parse_hello, parse_preset_name, MessageType,
+};
 use pinex_proto::state::{PedalState, Slot};
 use pinex_proto::{decode_frame, FrameAccumulator};
 
@@ -117,6 +119,75 @@ fn start_relative_offsets_would_shift_between_firmwares() {
         "if these ever agree, start-relative offsets are still not safe — \
          the layout would have to be fixed across ALL firmwares, not just two"
     );
+}
+
+/// The write path, exercised against the pedal's own state bytes.
+///
+/// This is the closest thing to a dry run of an actual preset change that can
+/// be done without transmitting: same input bytes the pedal sent, same
+/// read-modify-write, same verification.
+#[test]
+fn a_preset_change_built_from_real_state_touches_only_three_bytes() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let state = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+
+    // The pedal was playing slot C, preset 1.
+    assert_eq!(state.active_slot().unwrap(), Slot::C);
+
+    let (frame, touched) = pinex_proto::message::set_preset(&state, 7).unwrap();
+
+    // Slot C stages back into A, so: A's preset, the active-slot byte, and the
+    // direct-monitoring byte. Nothing else.
+    assert_eq!(touched.len(), 3, "touched offsets: {touched:?}");
+
+    // The frame must be a decodable state message whose body is the patched
+    // state verbatim — never re-encoded.
+    //
+    // Read with parse_header_unvalidated, not parse_header: this is a *request*
+    // frame, and requests carry one structural byte that responses do not, so
+    // the strict `remaining == size` check does not apply. See
+    // message::tests::requests_carry_one_extra_header_byte_that_responses_do_not.
+    let payload = decode_frame(&frame).expect("our write must be a valid frame");
+    let out_header = parse_header_unvalidated(&payload).unwrap();
+    assert_eq!(out_header.msg_type, MessageType::StateUpdate);
+    assert_eq!(
+        out_header.size as usize,
+        state.len(),
+        "declared body length"
+    );
+
+    // The state body is the tail of the payload, byte for byte.
+    let sent_body = &payload[payload.len() - state.len()..];
+    assert_eq!(sent_body.len(), state.len(), "writes must not resize state");
+
+    let differences: Vec<usize> = (0..state.len())
+        .filter(|&i| state.raw()[i] != sent_body[i])
+        .collect();
+    for offset in &differences {
+        assert!(
+            touched.contains(offset),
+            "offset {offset} changed but was not intended; intended {touched:?}"
+        );
+    }
+    // The pedal already had direct monitoring on, so that intended write is a
+    // no-op here. Two of the three intended bytes actually move.
+    assert_eq!(differences.len(), 2, "changed offsets: {differences:?}");
+}
+
+/// Every preset the pedal can hold must produce a safe write from real state.
+#[test]
+fn every_preset_index_produces_a_safe_write_from_real_state() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let state = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+
+    for preset in 0..pinex_proto::state::MAX_PRESETS {
+        let (_, touched) = pinex_proto::message::set_preset(&state, preset)
+            .unwrap_or_else(|e| panic!("preset {preset}: {e}"));
+        assert!(touched.len() <= 3, "preset {preset} touched {touched:?}");
+    }
+    assert!(pinex_proto::message::set_preset(&state, 20).is_err());
 }
 
 /// The name sits in a fixed 33-byte buffer followed by its true length. Trusting

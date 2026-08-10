@@ -1,34 +1,85 @@
-//! Pinex binary.
+//! Pinex — a preset browser for the IK Multimedia Tonex ONE.
 //!
-//! The device, display, input and web layers are not built yet (M1–M3). Until
-//! they are, this dumps the frames `pinex-proto` generates, so the bytes we
-//! intend to put on the wire can be eyeballed — and diffed against a USB capture
-//! — before anything is ever transmitted to a pedal.
+//! ```sh
+//! cargo run -p pinex                       # find the pedal automatically
+//! cargo run -p pinex -- /dev/cu.usbmodem1  # or name it
+//! cargo run -p pinex -- --sim              # no pedal: run against the simulator
+//! ```
+//!
+//! Keys: `n`/Enter next, `p` previous, `s` select, `r` refresh, `q` quit.
 
-use pinex_proto::message::PresetDetail;
-use pinex_proto::{hello, request_preset, request_state, USB_PID, USB_VID};
+use std::path::PathBuf;
 
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+use pinex::App;
+use pinex_device::Pedal;
+use pinex_input::StdinInput;
+use pinex_ui::ConsoleRenderer;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arg = std::env::args().nth(1);
+
+    // Held for the lifetime of the run: dropping it stops the simulated pedal.
+    let mut _sim = None;
+
+    let device = match arg.as_deref() {
+        Some("--sim") => {
+            let sim = pinex_device::sim::PedalSim::start()?;
+            let path = sim.device_path().to_path_buf();
+            eprintln!("simulated pedal on {}", path.display());
+            _sim = Some(sim);
+            path
+        }
+        Some("--help" | "-h") => {
+            eprintln!("{}", USAGE);
+            return Ok(());
+        }
+        Some(path) => PathBuf::from(path),
+        None => find_pedal().ok_or(
+            "no Tonex found. Plug it in, pass the tty path, or use --sim to run without one.",
+        )?,
+    };
+
+    eprintln!("opening {}", device.display());
+    let pedal = Pedal::open(&device)?;
+    let mut app = App::new(pedal, StdinInput::new(), ConsoleRenderer);
+
+    app.start()?;
+    eprintln!("{}", USAGE);
+
+    while app.step() {
+        for error in app.errors.drain(..) {
+            eprintln!("! {error}");
+        }
+    }
+    Ok(())
 }
 
-fn main() {
-    println!("pinex {} — protocol scaffolding", env!("CARGO_PKG_VERSION"));
-    println!("target device: USB {USB_VID:#06x}:{USB_PID:#06x} (Tonex ONE, CDC-ACM)");
-    println!();
-    println!("Outbound frames (nothing is transmitted; no device is opened):");
-    println!();
+const USAGE: &str = "keys: n/Enter = next, p = prev, s = select, r = refresh, q = quit";
 
-    println!("  Hello           {}", hex(&hello()));
-    println!("  RequestState    {}", hex(&request_state()));
+/// Find the pedal's tty.
+///
+/// The udev rule in `deploy/` gives it a stable `/dev/tonex` on Linux. Failing
+/// that, fall back to the single CDC-ACM node it enumerates as. This is a
+/// convenience, not a guarantee — pass the path explicitly if it guesses wrong.
+fn find_pedal() -> Option<PathBuf> {
+    for stable in ["/dev/tonex", "/dev/ttyACM0"] {
+        let path = PathBuf::from(stable);
+        if path.exists() {
+            return Some(path);
+        }
+    }
 
-    let preset = request_preset(0, PresetDetail::Summary).expect("preset 0 is in range");
-    println!("  RequestPreset 0 {}", hex(&preset));
-
-    println!();
-    println!("Read-only until M3. See docs/plans/ for milestones.");
+    // macOS: the callout device, which does not wait for carrier detect.
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir("/dev")
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cu.usbmodem"))
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
 }

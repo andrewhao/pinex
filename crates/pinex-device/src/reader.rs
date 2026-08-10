@@ -44,6 +44,19 @@ pub enum PedalEvent {
     },
 }
 
+/// Something we want the pedal to do.
+///
+/// Emitted by the UI/input layers, executed by whoever owns the write half of
+/// the port. Kept separate from [`PedalEvent`] so a request can never be
+/// mistaken for a fact: a `SetPreset` is an intention, and only the
+/// [`PedalEvent::StateChanged`] that follows is evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    RequestState,
+    RequestPreset(u8),
+    SetPreset(u8),
+}
+
 /// A running reader thread. Dropping this asks the thread to stop and joins it.
 #[derive(Debug)]
 pub struct Reader {
@@ -90,9 +103,22 @@ impl Drop for Reader {
     }
 }
 
+/// A zero-byte read faster than this is not an idle timeout.
+///
+/// The transport's VTIME is 1 s, so a genuine idle read takes roughly that long.
+/// A closed device returns immediately.
+const EOF_SUSPICION_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// How many suspiciously fast zero-reads before declaring the pedal gone.
+///
+/// More than one so a scheduling hiccup cannot fake an unplug.
+const EOF_CONSECUTIVE_ZEROS: u32 = 3;
+
 fn run<T: Transport>(mut transport: T, events: Sender<PedalEvent>, stop: Arc<AtomicBool>) {
     let mut acc = FrameAccumulator::new();
     let mut buf = [0u8; 4096];
+    let mut fast_zero_reads = 0u32;
+    let mut idle_started = std::time::Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         let n = match transport.read(&mut buf) {
@@ -105,12 +131,29 @@ fn run<T: Transport>(mut transport: T, events: Sender<PedalEvent>, stop: Arc<Ato
         };
 
         if n == 0 {
-            // An idle timeout, not end-of-stream. Any half-frame still sitting
-            // in the accumulator is now stale — the pedal does not pause
-            // mid-frame — so drop it rather than let it corrupt the next one.
+            // Zero bytes is ambiguous: with VMIN=0/VTIME=10 it means either
+            // "nothing arrived for a second" or "the device is gone". Timing
+            // tells them apart — an idle timeout takes the full VTIME window,
+            // while a closed device returns instantly, over and over.
+            if idle_started.elapsed() < EOF_SUSPICION_WINDOW {
+                fast_zero_reads += 1;
+                if fast_zero_reads >= EOF_CONSECUTIVE_ZEROS {
+                    let _ = events.send(PedalEvent::Disconnected);
+                    return;
+                }
+            } else {
+                fast_zero_reads = 0;
+            }
+
+            // Any half-frame still sitting in the accumulator is now stale —
+            // the pedal does not pause mid-frame — so drop it rather than let
+            // it corrupt the next one.
             acc.flush_stale();
+            idle_started = std::time::Instant::now();
             continue;
         }
+        fast_zero_reads = 0;
+        idle_started = std::time::Instant::now();
 
         for frame in acc.push(&buf[..n]) {
             // A closed receiver means every subscriber is gone; nothing left to
