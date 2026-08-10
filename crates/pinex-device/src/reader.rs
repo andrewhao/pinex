@@ -15,7 +15,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use pinex_proto::message::{parse_header, parse_hello, MessageType};
+use pinex_proto::message::{parse_header, parse_hello, parse_preset_name, MessageType, PresetInfo};
 use pinex_proto::state::PedalState;
 use pinex_proto::{decode_frame, FrameAccumulator};
 
@@ -29,7 +29,13 @@ pub enum PedalEvent {
     },
     Disconnected,
     StateChanged(PedalState),
-    PresetNames(Vec<String>),
+    /// One preset's index and name.
+    ///
+    /// The design doc modelled this as `PresetNames(Vec<String>)`, but the pedal
+    /// answers one preset per request; batching them here would make the reader
+    /// decide when a sweep is "done", which is policy, not transport. The
+    /// browser aggregates instead.
+    PresetName(PresetInfo),
     /// A frame arrived that we could not interpret. Carries the bytes so the
     /// failure can be diagnosed — and turned into a fixture.
     ParseError {
@@ -139,8 +145,10 @@ fn interpret(frame: &[u8]) -> PedalEvent {
                 Err(e) => parse_error(&body, e),
             }
         }
-        // Preset responses use a type code we have not confirmed against
-        // hardware, so anything else is reported rather than guessed at.
+        MessageType::PresetResponse => match parse_preset_name(&body) {
+            Ok(info) => PedalEvent::PresetName(info),
+            Err(e) => parse_error(&body, e),
+        },
         MessageType::Unknown(code) => PedalEvent::ParseError {
             raw: body.to_vec(),
             reason: format!("unrecognised message type {code:#06x}"),

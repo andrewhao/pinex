@@ -12,10 +12,13 @@ pub const TYPE_STATE_UPDATE: u16 = 0x0306;
 /// Message type of the Hello response.
 pub const TYPE_HELLO: u16 = 0x02;
 /// Message type used to *request* preset details.
-///
-/// The type code the pedal uses in its *response* is not confirmed here; treat
-/// anything unrecognised as [`MessageType::Unknown`] and inspect the raw bytes.
 pub const TYPE_PRESET_REQUEST: u16 = 0x0300;
+/// Message type of a preset-details *response*.
+///
+/// Confirmed against our own pedal (firmware 1.3.17): every reply to
+/// `request_preset` carries `0x0304`. See
+/// `tests/hardware_captures.rs::preset_responses_carry_their_index_and_name`.
+pub const TYPE_PRESET_RESPONSE: u16 = 0x0304;
 
 /// Header marker every message opens with.
 const HEADER_MARKER: [u8; 2] = [0xB9, 0x03];
@@ -24,6 +27,7 @@ const HEADER_MARKER: [u8; 2] = [0xB9, 0x03];
 pub enum MessageType {
     Hello,
     StateUpdate,
+    PresetResponse,
     Unknown(u16),
 }
 
@@ -32,6 +36,7 @@ impl MessageType {
         match code {
             TYPE_HELLO => Self::Hello,
             TYPE_STATE_UPDATE => Self::StateUpdate,
+            TYPE_PRESET_RESPONSE => Self::PresetResponse,
             other => Self::Unknown(other),
         }
     }
@@ -202,6 +207,65 @@ pub fn parse_hello(body: &[u8]) -> Result<String, MessageError> {
         out.push_str(&part.to_string());
     }
     Ok(out)
+}
+
+/// A preset's index and display name, as reported by the pedal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetInfo {
+    pub index: u8,
+    pub name: String,
+}
+
+/// Extract the index and name from a preset-details response.
+///
+/// The body nests as `[1, index, [[name_buffer, name_len], ...]]`. The name
+/// buffer is a fixed 33-slot list padded with NULs, and the length that follows
+/// it is what says where the name really ends — trusting the buffer alone drags
+/// padding into the string.
+///
+/// Walked structurally rather than by offset, because the preset payload is
+/// ~2 KB of parameters whose layout we have not reverse-engineered and should
+/// not depend on.
+pub fn parse_preset_name(body: &[u8]) -> Result<PresetInfo, MessageError> {
+    let header = parse_header(body)?;
+    let mut index = header.body_offset;
+
+    let (_, outer) = read_list_header(body, &mut index)?;
+    if outer < 3 {
+        return Err(MessageError::UnexpectedShape {
+            what: "preset body list too short to hold an index and payload",
+        });
+    }
+    // Element 0 is a constant `1` in every capture; element 1 is the index.
+    let _ = read_int(body, &mut index)?;
+    let preset_index = read_int(body, &mut index)?;
+
+    // Descend to the [name_buffer, name_len] pair.
+    read_list_header(body, &mut index)?;
+    read_list_header(body, &mut index)?;
+
+    let (_, capacity) = read_list_header(body, &mut index)?;
+    let mut chars = Vec::with_capacity(capacity as usize);
+    for _ in 0..capacity {
+        chars.push(read_int(body, &mut index)?);
+    }
+    let declared = read_int(body, &mut index)? as usize;
+
+    if declared > chars.len() {
+        return Err(MessageError::UnexpectedShape {
+            what: "preset name length exceeds its buffer",
+        });
+    }
+
+    let name = chars[..declared]
+        .iter()
+        .map(|&c| char::from(c as u8))
+        .collect::<String>();
+
+    Ok(PresetInfo {
+        index: preset_index as u8,
+        name: name.trim_end().to_string(),
+    })
 }
 
 /// Parse a header without checking the declared size.
