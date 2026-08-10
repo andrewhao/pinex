@@ -1,6 +1,41 @@
 # Protocol Ground Truth + PTY Simulator Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **For Claude:** ✅ **COMPLETE — do not execute.** All nine tasks shipped. Kept
+> for the reasoning and for the caveats in "Critical context" below, which still
+> hold. What the plan got wrong or left out is recorded in *Outcome* immediately
+> below; read that before trusting any task's stated expectations.
+
+## Outcome
+
+Everything the plan set out to do landed, and two things it did not anticipate
+came out of it:
+
+- **Task 5 found a real bug, which is what it was written to do.** Every
+  `offset_from_start` constant was five bytes too high — `INPUT_TRIM` landed
+  mid-float, `CAB_BYPASS` on a list tag. Corrected against the capture's own
+  annotations, per the plan's instruction not to fit the test to the code. The
+  plan feared this would mean "M3's write path would corrupt the pedal"; it did
+  not. Those five constants back read-only accessors. Every `offset_from_end`
+  constant — which is what the write path actually patches through — validated
+  unchanged on the first run.
+- **The source state dump is a splice.** Its declared size is stale by exactly
+  the six bytes of the two fields its author marks "added in 1.2 firmware", so
+  header and body come from different firmware versions. It cannot validate
+  framing, only offsets. The simulator rebuilds the header for this reason, and
+  a test fails the day the capture starts validating on its own.
+
+Two corrections to the plan's own text:
+
+- Task 3 shipped `skip_value` with unbounded recursion; a 20,000-level nested
+  input aborted the process with `SIGABRT`. Fixed in `146b8eb` with
+  `MAX_LIST_DEPTH`. The plan specified the function without a depth bound.
+- Task 6 called for `openpty` + `ptsname`. `openpty` alone is insufficient —
+  only `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` yields a device *path*, and
+  the path is the point: it is what makes `TtyTransport::open` run the same code
+  it will run against `/dev/tonex`.
+
+The plan's closing statement about what remains unverified is unchanged and
+still accurate. See `docs/plans/README.md` for the current open-questions list.
 
 **Goal:** Replace the codec's remaining assumptions with real captured hardware data, then build a PTY-backed pedal simulator so `pinex-device` can be written and tested end-to-end on a Mac with no pedal attached.
 

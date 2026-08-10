@@ -25,7 +25,7 @@ fixture harness; `cargo clippy --workspace --all-targets -- -D warnings`;
 
 **Follow-on:** M1 step 2 (`pinex-device`) needs the pedal. The top item for the
 first hardware session is capturing one `RequestState` response — it settles
-finding 8 below, which is currently pinned by a test rather than resolved.
+finding 8 below — since resolved; see the banner there.
 
 ---
 
@@ -102,6 +102,17 @@ WriteState      b9 03 81 06 03 82 <len_lo> <len_hi> 80 0b 03  ++ <raw state body
 Response header types: `0x0306` = StateUpdate, `0x02` = Hello.
 
 ### 8. Open ambiguity — the `0x80` tag width
+
+> ✅ **RESOLVED** by [2026-08-03](2026-08-03-protocol-ground-truth-and-pty-simulator.md).
+> It is **1 byte**, and it did not need a capture from our own pedal — published
+> captures already settled it. A `0xB9 0x03` list declaring three elements
+> contains three only under the 1-byte reading. The prediction below that it
+> "cannot be settled without a real frame" was wrong in a useful way: the frame
+> existed, in a document already cited here. The evidence is on
+> `pinex_proto::value::tag_width`; the strategy of gating it behind one function
+> is what made the correction a one-line change.
+
+
 
 `protocol.md` says `0x80`/`0x81`/`0x82` are all u16le. But `tonex.cpp:228-247` reads `0x80` as tag **+ 1 byte** while `0x81`/`0x82` are tag **+ 2 bytes**. The hardcoded request frames are consistent with the 1-byte reading.
 
