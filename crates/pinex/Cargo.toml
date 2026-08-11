@@ -27,3 +27,11 @@ pinex-device = { workspace = true, features = ["sim"] }
 [[example]]
 name = "panel_calibrate"
 required-features = ["hat"]
+
+[[example]]
+name = "button_test"
+required-features = ["hat"]
+
+[[example]]
+name = "button_probe"
+required-features = ["hat"]

@@ -25,6 +25,18 @@ pub mod pins {
     pub const KEY3: u8 = 16;
 }
 
+/// Human names for each input, in the same order as [`BINDINGS`].
+pub const LABELS: [&str; 8] = [
+    "joy UP",
+    "joy DOWN",
+    "joy LEFT",
+    "joy RIGHT",
+    "joy PRESS",
+    "KEY1",
+    "KEY2",
+    "KEY3",
+];
+
 /// What each input does. Chosen so the two most common actions — step through
 /// presets — are the joystick's natural axis, and the destructive one (load a
 /// preset) needs a deliberate press.
@@ -74,6 +86,18 @@ impl HatButtons {
         BINDINGS.into_iter()
     }
 
+    /// Raw pin levels, undebounced. `true` means pressed (the pin is low).
+    ///
+    /// Diagnostic: it is the only way to tell "the debounce ate it" apart from
+    /// "rppal never saw it".
+    pub fn raw_levels(&self) -> [bool; 8] {
+        let mut levels = [false; 8];
+        for (slot, pin) in levels.iter_mut().zip(self.pins.iter()) {
+            *slot = pin.is_low();
+        }
+        levels
+    }
+
     /// A newly pressed input, once the level has held steady. Holding a button
     /// does not repeat, which matters when the action is "load a preset".
     fn newly_pressed(&mut self) -> Option<usize> {
@@ -83,6 +107,25 @@ impl HatButtons {
             *slot = pin.is_low();
         }
         self.debounce.sample(levels).into_iter().next()
+    }
+}
+
+impl HatButtons {
+    /// Wait for any input and report *which* one, rather than what it means.
+    ///
+    /// For diagnostics: `button_test` needs to know that KEY3 specifically
+    /// registered, not merely that something asked to quit.
+    pub fn poll_raw(&mut self, timeout: Duration) -> Option<usize> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(index) = self.newly_pressed() {
+                return Some(index);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
