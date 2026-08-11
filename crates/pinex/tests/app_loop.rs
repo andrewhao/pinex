@@ -164,6 +164,36 @@ fn quitting_stops_the_loop() {
     );
 }
 
+/// The loop ticks 20 times a second. Rendering every tick filled the Pi's
+/// journal with identical lines, and would be wasted SPI traffic on a panel.
+#[test]
+fn an_unchanged_view_is_not_re_rendered() {
+    let sim = PedalSim::start().unwrap();
+    let pedal = Pedal::open(sim.device_path()).unwrap();
+    let mut app = App::new(pedal, ScriptedInput::new([]), RecordingRenderer::default());
+    app.start().unwrap();
+    app.settle_until(BUDGET, |b| b.view().active_name.is_some());
+
+    // Let it idle: nothing changes, so nothing new should be drawn.
+    let before = app.renderer().frames.len();
+    app.settle(Duration::from_millis(600));
+    let after = app.renderer().frames.len();
+
+    assert_eq!(
+        before,
+        after,
+        "an idle loop drew {} extra identical frames",
+        after - before
+    );
+
+    // ...but a real change must still draw.
+    app.step_with(InputEvent::Next);
+    assert!(
+        app.renderer().frames.len() > after,
+        "moving the cursor must redraw"
+    );
+}
+
 /// A missing pedal is not an error: the loop must keep running and say
 /// NO PEDAL. Under systemd, exiting here would become a crash loop.
 #[test]

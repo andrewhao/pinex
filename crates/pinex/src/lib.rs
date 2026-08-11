@@ -43,6 +43,8 @@ pub struct App<I: InputSource, R: Renderer> {
     /// The pedal's own most recent state. Every write starts from these bytes;
     /// without one we cannot safely build a preset change, so we decline to try.
     last_state: Option<PedalState>,
+    /// The last frame handed to the renderer, so identical ones are skipped.
+    last_frame: Option<Vec<String>>,
     /// Reported rather than swallowed, and surfaced on the display.
     pub errors: Vec<String>,
     /// Shared with the debug web page, when one is running.
@@ -59,6 +61,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             renderer,
             browser: PresetBrowser::new(),
             last_state: None,
+            last_frame: None,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
@@ -82,6 +85,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             renderer,
             browser: PresetBrowser::new(),
             last_state: None,
+            last_frame: None,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
@@ -157,7 +161,17 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             }
         }
 
-        self.renderer.render(&self.browser.view());
+        // Render only when something actually changed. The loop ticks every
+        // 50 ms; rendering unconditionally meant ~20 identical lines a second
+        // into the journal, forever. A display that redraws an unchanged frame
+        // is also just wasted SPI traffic on the Pi.
+        let view = self.browser.view();
+        let frame = pinex_ui::lines(&view);
+        if self.last_frame.as_ref() != Some(&frame) {
+            self.renderer.render(&view);
+            self.last_frame = Some(frame);
+        }
+        drop(view);
         self.publish_snapshot();
         true
     }
