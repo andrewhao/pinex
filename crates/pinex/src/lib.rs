@@ -165,13 +165,14 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         // 50 ms; rendering unconditionally meant ~20 identical lines a second
         // into the journal, forever. A display that redraws an unchanged frame
         // is also just wasted SPI traffic on the Pi.
-        let view = self.browser.view();
-        let frame = pinex_ui::lines(&view);
-        if self.last_frame.as_ref() != Some(&frame) {
-            self.renderer.render(&view);
-            self.last_frame = Some(frame);
+        {
+            let view = self.browser.view();
+            let frame = pinex_ui::lines(&view);
+            if self.last_frame.as_ref() != Some(&frame) {
+                self.renderer.render(&view);
+                self.last_frame = Some(frame);
+            }
         }
-        drop(view);
         self.publish_snapshot();
         true
     }
