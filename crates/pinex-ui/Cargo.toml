@@ -5,8 +5,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The Waveshare 1.44" HAT backend. Off by default: rppal only builds on Linux,
+# and the drawing code above it is deliberately hardware-free.
+hat = ["dep:rppal", "dep:mipidsi"]
+
 [dependencies]
 pinex-proto.workspace = true
 embedded-graphics.workspace = true
+rppal = { workspace = true, optional = true }
+mipidsi = { workspace = true, optional = true }
 pinex-device.workspace = true
 pinex-input.workspace = true

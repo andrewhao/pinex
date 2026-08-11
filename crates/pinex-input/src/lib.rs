@@ -13,6 +13,9 @@
 //!   only piece that needs the target board, and it is deliberately the *only*
 //!   piece, so everything else stays testable.
 
+#[cfg(feature = "hat")]
+pub mod hat;
+
 use std::collections::VecDeque;
 use std::io::{BufRead, IsTerminal};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -72,6 +75,12 @@ impl ScriptedInput {
 
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+}
+
+impl<T: InputSource + ?Sized> InputSource for Box<T> {
+    fn poll(&mut self, timeout: Duration) -> Option<InputEvent> {
+        (**self).poll(timeout)
     }
 }
 

@@ -47,6 +47,28 @@ pub fn lines(view: &View<'_>) -> Vec<String> {
     out
 }
 
+/// Draws to several renderers at once.
+///
+/// The Pi runs a panel *and* logs to the journal; both should show the same
+/// thing, and neither should be special-cased in the app loop.
+#[derive(Default)]
+pub struct Multi(pub Vec<Box<dyn Renderer + Send>>);
+
+impl Multi {
+    pub fn with(mut self, renderer: impl Renderer + Send + 'static) -> Self {
+        self.0.push(Box::new(renderer));
+        self
+    }
+}
+
+impl Renderer for Multi {
+    fn render(&mut self, view: &View<'_>) {
+        for renderer in self.0.iter_mut() {
+            renderer.render(view);
+        }
+    }
+}
+
 /// Prints to stdout. Used when running on a laptop with no panel.
 #[derive(Debug, Default)]
 pub struct ConsoleRenderer;

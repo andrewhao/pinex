@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The Waveshare 1.44" HAT: ST7735S panel plus joystick and keys. Pi only.
+hat = ["pinex-ui/hat", "pinex-input/hat"]
+
 [dependencies]
 pinex-proto.workspace = true
 pinex-device = { workspace = true, features = ["sim"] }
