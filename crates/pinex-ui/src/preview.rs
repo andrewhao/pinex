@@ -247,14 +247,11 @@ mod tests {
 
     fn view_of(connection: &Connection) -> View<'_> {
         View {
-            connection,
-            cursor: 0,
             cursor_name: Some("TF BENSON PREAMP - 1"),
             cursor_color: Some([255, 63, 0]),
             active: Some(0),
             active_name: Some("TF BENSON PREAMP - 1"),
-            pending: false,
-            last_error: None,
+            ..View::stub(connection)
         }
     }
 

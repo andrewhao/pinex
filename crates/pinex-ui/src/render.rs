@@ -108,14 +108,10 @@ mod tests {
         name: Option<&'a str>,
     ) -> View<'a> {
         View {
-            connection,
-            cursor: 0,
             cursor_name: name,
-            cursor_color: None,
             active,
             active_name: name,
-            pending: false,
-            last_error: None,
+            ..View::stub(connection)
         }
     }
 

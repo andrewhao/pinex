@@ -19,7 +19,9 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle};
 use embedded_graphics::text::{Alignment, Baseline, Text};
 
-use crate::browser::{Connection, View};
+use crate::browser::{Connection, Screen, View};
+use crate::skin::{self, Pedal};
+use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MIN_INPUT_TRIM_DB};
 
 /// The HAT's panel geometry.
 pub const WIDTH: u32 = 128;
@@ -43,8 +45,238 @@ where
 
     match view.connection {
         Connection::Disconnected => draw_no_pedal(target),
-        Connection::Connected { firmware } => draw_browser(target, view, firmware),
+        Connection::Connected { firmware } => match view.screen {
+            Screen::Slots => draw_slots(target, view),
+            Screen::Stomp => draw_stomp(target, view),
+            Screen::Gain => draw_gain(target, view, firmware),
+        },
     }
+}
+
+/// A header strip: page name left, a marker for the page you are on.
+fn draw_header<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let style = MonoTextStyle::new(&FONT_6X10, DIM);
+    Text::with_baseline(view.screen.title(), Point::new(3, 1), style, Baseline::Top)
+        .draw(target)?;
+
+    if view.pending {
+        Text::with_alignment(
+            "SENDING",
+            Point::new(WIDTH as i32 - 3, 9),
+            MonoTextStyle::new(&FONT_6X10, WARN),
+            Alignment::Right,
+        )
+        .draw(target)?;
+    }
+
+    // Parse failures stay visible on every page. A firmware change that breaks
+    // us must surface here, not only in a log nobody reads on stage.
+    if let Some(error) = view.last_error {
+        let short: String = error.chars().take(NAME_COLS).collect();
+        Text::with_alignment(
+            &short,
+            Point::new(WIDTH as i32 / 2, HEIGHT as i32 - 2),
+            MonoTextStyle::new(&FONT_6X10, WARN),
+            Alignment::Center,
+        )
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+/// The two footswitch slots, side by side.
+///
+/// The whole point of A/B is that both sounds are already loaded, so the panel
+/// shows both at once: which is in A, which is in B, and which one you are
+/// hearing. Nothing here requires remembering a previous screen.
+fn draw_slots<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_header(target, view)?;
+
+    for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
+        let x = 3 + index as i32 * 63;
+        let playing = view.active_slot == Some(slot);
+        let editing = view.selected == slot;
+
+        // Slot letter, above its box.
+        let letter_color = if playing { PLAYING } else { DIM };
+        Text::with_alignment(
+            if slot == Slot::A { "A" } else { "B" },
+            Point::new(x + 29, 20),
+            MonoTextStyle::new(&FONT_9X15_BOLD, letter_color),
+            Alignment::Center,
+        )
+        .draw(target)?;
+
+        // The box the slot holds. When editing this slot, the cursor preview
+        // is drawn instead of what is loaded — you see what you would get.
+        let preset = if editing {
+            Some(view.cursor)
+        } else {
+            view.slot_preset(slot)
+        };
+        let name = if editing {
+            view.cursor_name
+        } else {
+            view.slot_name_for(slot)
+        };
+        let color = if editing {
+            view.cursor_color
+        } else {
+            view.slot_color_for(slot)
+        };
+
+        let area = Rectangle::new(Point::new(x, 24), Size::new(59, 70));
+        match (preset, name) {
+            (Some(_), Some(name)) => {
+                skin::draw(target, area, &Pedal::new(name, color, playing))?;
+            }
+            _ => {
+                RoundedRectangle::new(area, CornerRadii::new(Size::new(3, 3)))
+                    .into_styled(PrimitiveStyle::with_stroke(DIM, 1))
+                    .draw(target)?;
+            }
+        }
+
+        // Preset number under the box.
+        if let Some(preset) = preset {
+            Text::with_alignment(
+                &format!("{:02}", preset + 1),
+                Point::new(x + 29, 106),
+                MonoTextStyle::new(&FONT_9X15_BOLD, if playing { PLAYING } else { TEXT }),
+                Alignment::Center,
+            )
+            .draw(target)?;
+        }
+
+        // Editing marker: a bar under the slot you are changing.
+        if editing {
+            Rectangle::new(Point::new(x, 110), Size::new(59, 2))
+                .into_styled(PrimitiveStyle::with_fill(WARN))
+                .draw(target)?;
+        }
+    }
+
+    let hint = if view.active_slot == Some(view.selected) {
+        "press = load (live)"
+    } else {
+        "press = load + go"
+    };
+    Text::with_alignment(
+        hint,
+        Point::new(WIDTH as i32 / 2, 124),
+        MonoTextStyle::new(&FONT_6X10, DIM),
+        Alignment::Center,
+    )
+    .draw(target)?;
+    Ok(())
+}
+
+/// Stomp mode: one box, big, because there is only one.
+fn draw_stomp<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_header(target, view)?;
+
+    let loaded = view.slot_preset(Slot::C);
+    let showing_loaded = loaded == Some(view.cursor);
+    let name = view.cursor_name.unwrap_or("...");
+
+    let area = Rectangle::new(Point::new(24, 16), Size::new(80, 84));
+    skin::draw(
+        target,
+        area,
+        &Pedal::new(name, view.cursor_color, showing_loaded),
+    )?;
+
+    Text::with_alignment(
+        &format!("{:02}", view.cursor + 1),
+        Point::new(WIDTH as i32 / 2, 114),
+        MonoTextStyle::new(&FONT_9X15_BOLD, if showing_loaded { PLAYING } else { TEXT }),
+        Alignment::Center,
+    )
+    .draw(target)?;
+
+    if !showing_loaded {
+        Text::with_alignment(
+            "press to load",
+            Point::new(WIDTH as i32 / 2, 125),
+            MonoTextStyle::new(&FONT_6X10, DIM),
+            Alignment::Center,
+        )
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+/// Global gain, as a knob you can read across a stage.
+fn draw_gain<D>(target: &mut D, view: &View<'_>, firmware: &str) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_header(target, view)?;
+
+    let span = MAX_INPUT_TRIM_DB - MIN_INPUT_TRIM_DB;
+    let fraction = ((view.gain_db - MIN_INPUT_TRIM_DB) / span).clamp(0.0, 1.0);
+
+    // A wide bar rather than a dial: at this size a bar's fill is readable at a
+    // glance, where a pointer angle is not.
+    let bar = Rectangle::new(Point::new(12, 46), Size::new(104, 18));
+    bar.into_styled(PrimitiveStyle::with_stroke(DIM, 1))
+        .draw(target)?;
+    let filled = (102.0 * fraction) as u32;
+    if filled > 0 {
+        Rectangle::new(Point::new(13, 47), Size::new(filled, 16))
+            .into_styled(PrimitiveStyle::with_fill(if view.gain_db > 0.0 {
+                WARN
+            } else {
+                PLAYING
+            }))
+            .draw(target)?;
+    }
+
+    // Centre tick: unity gain, the value you return to.
+    Rectangle::new(Point::new(63, 42), Size::new(1, 26))
+        .into_styled(PrimitiveStyle::with_fill(TEXT))
+        .draw(target)?;
+
+    Text::with_alignment(
+        &format!("{:+.1} dB", view.gain_db),
+        Point::new(WIDTH as i32 / 2, 34),
+        MonoTextStyle::new(&FONT_9X15_BOLD, TEXT),
+        Alignment::Center,
+    )
+    .draw(target)?;
+
+    Text::with_alignment(
+        &format!("{MIN_INPUT_TRIM_DB:.0}"),
+        Point::new(12, 76),
+        MonoTextStyle::new(&FONT_6X10, DIM),
+        Alignment::Left,
+    )
+    .draw(target)?;
+    Text::with_alignment(
+        &format!("+{MAX_INPUT_TRIM_DB:.0}"),
+        Point::new(WIDTH as i32 - 12, 76),
+        MonoTextStyle::new(&FONT_6X10, DIM),
+        Alignment::Right,
+    )
+    .draw(target)?;
+
+    Text::with_alignment(
+        &format!("fw {firmware}"),
+        Point::new(WIDTH as i32 / 2, 118),
+        MonoTextStyle::new(&FONT_6X10, DIM),
+        Alignment::Center,
+    )
+    .draw(target)?;
+    Ok(())
 }
 
 /// The explicit "NO PEDAL" screen the spec asks for.
@@ -76,140 +308,6 @@ where
     Ok(())
 }
 
-fn draw_browser<D>(target: &mut D, view: &View<'_>, firmware: &str) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let small = MonoTextStyle::new(&FONT_6X10, DIM);
-    let name_style = MonoTextStyle::new(&FONT_6X10, TEXT);
-
-    // Header: firmware, right-aligned so the number below owns the centre.
-    Text::with_baseline(
-        &format!("fw {firmware}"),
-        Point::new(2, 1),
-        small,
-        Baseline::Top,
-    )
-    .draw(target)?;
-
-    // The pedal's own colour for the browsed preset, as a bar down the side —
-    // so the panel and the pedal's ring agree at a glance.
-    if let Some([r, g, b]) = view.cursor_color {
-        RoundedRectangle::new(
-            Rectangle::new(Point::new(118, 2), Size::new(8, 10)),
-            CornerRadii::new(Size::new(2, 2)),
-        )
-        // Rgb565 takes 5/6/5-bit channels, so the pedal's 8-bit values are
-        // narrowed rather than passed through.
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(
-            r >> 3,
-            g >> 2,
-            b >> 3,
-        )))
-        .draw(target)?;
-    }
-
-    // The number, as large as the panel allows. Green when this is what is
-    // playing, white when the player is browsing elsewhere.
-    let browsing_elsewhere = view.active != Some(view.cursor);
-    let number_color = if browsing_elsewhere { TEXT } else { PLAYING };
-    let number = MonoTextStyle::new(&FONT_10X20, number_color);
-
-    Text::with_alignment(
-        &format!("{:02}", view.cursor + 1),
-        Point::new(WIDTH as i32 / 2, 44),
-        number,
-        Alignment::Center,
-    )
-    .draw(target)?;
-
-    // Name, wrapped over two lines.
-    let name = view.cursor_name.unwrap_or("...");
-    for (line, text) in wrap(name, NAME_COLS).iter().take(2).enumerate() {
-        Text::with_alignment(
-            text,
-            Point::new(WIDTH as i32 / 2, 60 + (line as i32 * 11)),
-            name_style,
-            Alignment::Center,
-        )
-        .draw(target)?;
-    }
-
-    // Footer: what is actually playing, whenever that differs from the cursor.
-    // This is the line that stops the panel implying a preset is loaded when it
-    // is only being looked at.
-    let footer = MonoTextStyle::new(&FONT_9X15_BOLD, PLAYING);
-    if view.pending {
-        Text::with_alignment(
-            "sending...",
-            Point::new(WIDTH as i32 / 2, 104),
-            MonoTextStyle::new(&FONT_9X15_BOLD, WARN),
-            Alignment::Center,
-        )
-        .draw(target)?;
-    } else if browsing_elsewhere {
-        let playing = match view.active {
-            Some(active) => format!("now {:02}", active + 1),
-            None => "now --".to_string(),
-        };
-        Text::with_alignment(
-            &playing,
-            Point::new(WIDTH as i32 / 2, 104),
-            footer,
-            Alignment::Center,
-        )
-        .draw(target)?;
-    }
-
-    if let Some(error) = view.last_error {
-        let err = MonoTextStyle::new(&FONT_6X10, WARN);
-        let short: String = error.chars().take(NAME_COLS).collect();
-        Text::with_alignment(
-            &short,
-            Point::new(WIDTH as i32 / 2, 120),
-            err,
-            Alignment::Center,
-        )
-        .draw(target)?;
-    }
-    Ok(())
-}
-
-/// Break `text` into lines of at most `cols` characters, on word boundaries
-/// where it can and mid-word where a single word is too long.
-fn wrap(text: &str, cols: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-
-    for word in text.split_whitespace() {
-        if word.len() > cols {
-            if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-            }
-            for chunk in word.as_bytes().chunks(cols) {
-                lines.push(String::from_utf8_lossy(chunk).into_owned());
-            }
-            continue;
-        }
-        let would_be = if current.is_empty() {
-            word.len()
-        } else {
-            current.len() + 1 + word.len()
-        };
-        if would_be > cols {
-            lines.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(word);
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +331,10 @@ mod tests {
 
         fn any(&self, wanted: Rgb565) -> bool {
             self.pixels.contains(&wanted)
+        }
+
+        fn pixel_at(&self, x: u32, y: u32) -> Rgb565 {
+            self.pixels[(y * WIDTH + x) as usize]
         }
     }
 
@@ -262,14 +364,76 @@ mod tests {
 
     fn view_of<'a>(connection: &'a Connection, cursor: u8, name: Option<&'a str>) -> View<'a> {
         View {
-            connection,
             cursor,
             cursor_name: name,
-            cursor_color: None,
             active: Some(cursor),
             active_name: name,
-            pending: false,
-            last_error: None,
+            ..View::stub(connection)
+        }
+    }
+
+    /// A fully populated Slots view, as it looks once a state has arrived.
+    fn slots_view(connection: &Connection, playing: Slot) -> View<'_> {
+        View {
+            cursor: 4,
+            cursor_name: Some("TF TILT - 1 ADV"),
+            cursor_color: Some([255, 63, 0]),
+            active: Some(0),
+            active_name: Some("TF BENSON PREAMP - 1"),
+            slot_presets: Some([0, 9, 1]),
+            active_slot: Some(playing),
+            slot_names: [
+                Some("TF BENSON PREAMP - 1"),
+                Some("TF PROTEIN - BLUE 1"),
+                Some("TF TILT - 1 ADV"),
+            ],
+            slot_colors: [Some([255, 63, 0]), Some([47, 0, 255]), Some([0, 255, 0])],
+            ..View::stub(connection)
+        }
+    }
+
+    #[test]
+    fn the_playing_slot_is_drawn_in_the_playing_colour() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let mut panel = Buffer::new();
+        draw(&mut panel, &slots_view(&c, Slot::A)).unwrap();
+        assert!(panel.any(PLAYING), "the playing slot reads green");
+    }
+
+    /// Which slot is playing must be visible, or the panel cannot be used to
+    /// decide what stepping on the pedal will do.
+    #[test]
+    fn playing_a_and_playing_b_look_different() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let mut on_a = Buffer::new();
+        draw(&mut on_a, &slots_view(&c, Slot::A)).unwrap();
+        let mut on_b = Buffer::new();
+        draw(&mut on_b, &slots_view(&c, Slot::B)).unwrap();
+        assert_ne!(
+            on_a.pixels, on_b.pixels,
+            "A playing and B playing must not render identically"
+        );
+    }
+
+    /// The gain page must render across the whole range without overflowing.
+    #[test]
+    fn the_gain_page_renders_across_the_whole_range() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        for gain in [-15.0f32, -6.0, 0.0, 7.5, 15.0] {
+            let mut panel = Buffer::new();
+            let view = View {
+                screen: Screen::Gain,
+                gain_db: gain,
+                ..View::stub(&c)
+            };
+            draw(&mut panel, &view).unwrap();
+            assert!(panel.lit() > 0, "gain {gain} drew nothing");
         }
     }
 
@@ -290,39 +454,18 @@ mod tests {
         );
     }
 
+    /// Both slots are drawn at once — that is the whole point of the page.
     #[test]
-    fn the_playing_preset_is_drawn_in_the_playing_colour() {
+    fn both_slots_appear_on_the_ab_page() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
         let mut panel = Buffer::new();
-        let c = Connection::Connected {
-            firmware: "1.3.17".into(),
-        };
-        draw(&mut panel, &view_of(&c, 4, Some("TF TILT - 1 ADV"))).unwrap();
-        assert!(
-            panel.any(PLAYING),
-            "cursor on the active preset reads green"
-        );
-    }
+        draw(&mut panel, &slots_view(&c, Slot::A)).unwrap();
 
-    /// Browsing away from what is playing must be visually distinct, or the
-    /// panel implies a preset is loaded when it is only being looked at.
-    #[test]
-    fn browsing_away_from_the_active_preset_looks_different() {
-        let c = Connection::Connected {
-            firmware: "1.3.17".into(),
-        };
-
-        let mut on = Buffer::new();
-        draw(&mut on, &view_of(&c, 4, Some("TF TILT"))).unwrap();
-
-        let mut away = Buffer::new();
-        let mut v = view_of(&c, 4, Some("TF TILT"));
-        v.active = Some(9);
-        draw(&mut away, &v).unwrap();
-
-        assert_ne!(
-            on.pixels, away.pixels,
-            "the two states must not render identically"
-        );
+        let left = (0..64).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
+        let right = (64..WIDTH).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
+        assert!(left && right, "both slots must be visible");
     }
 
     #[test]
@@ -355,17 +498,5 @@ mod tests {
         let mut panel = Buffer::new();
         draw(&mut panel, &v).unwrap();
         assert!(panel.lit() > 0);
-    }
-
-    #[test]
-    fn names_wrap_on_word_boundaries_and_split_only_when_forced() {
-        assert_eq!(wrap("TF TILT - 1 ADV", 21), vec!["TF TILT - 1 ADV"]);
-        assert_eq!(
-            wrap("TF MORNIING GLORY - BRIGHT 1", 21),
-            vec!["TF MORNIING GLORY -", "BRIGHT 1"]
-        );
-        // A single word longer than the line is cut, not lost.
-        assert_eq!(wrap("ABCDEFGHIJ", 4), vec!["ABCD", "EFGH", "IJ"]);
-        assert!(wrap("", 10).is_empty());
     }
 }

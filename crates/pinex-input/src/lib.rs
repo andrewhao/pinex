@@ -34,6 +34,10 @@ pub enum InputEvent {
     Select,
     /// Re-sync everything from the pedal.
     Refresh,
+    /// Change page.
+    Page,
+    /// Switch which slot is being edited, or which mode the pedal is in.
+    Mode,
     /// Shut down cleanly.
     Quit,
 }
@@ -47,6 +51,8 @@ impl InputEvent {
             "p" | "k" => Some(Self::Prev),
             "s" | "enter" => Some(Self::Select),
             "r" => Some(Self::Refresh),
+            "t" => Some(Self::Page),
+            "m" | " " => Some(Self::Mode),
             "q" => Some(Self::Quit),
             _ => None,
         }

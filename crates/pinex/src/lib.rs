@@ -309,7 +309,52 @@ impl<I: InputSource, R: Renderer> App<I, R> {
                     message::set_preset(current, n).map_err(|e| e.to_string())?;
                 pedal.send_frame(&frame).map_err(|e| e.to_string())
             }
+            Command::AssignSlot(slot, preset) => {
+                Self::edit(pedal, &self.last_state, "assign slot", move |state| {
+                    state.assign_slot(slot, preset)
+                })
+            }
+            Command::LoadSlot(slot, preset) => {
+                Self::edit(pedal, &self.last_state, "load slot", move |state| {
+                    state.load_slot(slot, preset)
+                })
+            }
+            Command::SwitchToSlot(slot) => {
+                Self::edit(pedal, &self.last_state, "switch slot", move |state| {
+                    state.switch_to_slot(slot)
+                })
+            }
+            Command::SetStompMode(on) => {
+                Self::edit(pedal, &self.last_state, "set mode", move |state| {
+                    state.set_stomp_mode(on).map(|off| vec![off])
+                })
+            }
+            Command::SetGain(db) => Self::edit(pedal, &self.last_state, "set gain", move |state| {
+                state.set_input_trim(db).map(|offsets| offsets.to_vec())
+            }),
         }
+    }
+
+    /// Apply a verified edit to the pedal's own state and transmit it.
+    ///
+    /// Every stage operation routes through `message::edit_state`, so none can
+    /// widen into a write that touches more than it meant to.
+    fn edit<F>(
+        pedal: &mut Pedal,
+        last_state: &Option<PedalState>,
+        what: &str,
+        edit: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(&mut PedalState) -> Result<Vec<usize>, pinex_proto::state::StateError>,
+    {
+        let Some(current) = last_state else {
+            return Err(format!(
+                "cannot {what}: no state received from the pedal yet"
+            ));
+        };
+        let (frame, _touched) = message::edit_state(current, edit).map_err(|e| e.to_string())?;
+        pedal.send_frame(&frame).map_err(|e| e.to_string())
     }
 
     /// Feed one input and run a step, for tests and scripted sessions.

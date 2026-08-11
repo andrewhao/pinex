@@ -154,6 +154,133 @@ fn start_relative_offsets_would_shift_between_firmwares() {
     );
 }
 
+/// The fields beside the colour array, read on both firmware generations.
+///
+/// Anchoring to the array is what makes this work: its position differs between
+/// firmwares, but stomp mode / cab bypass / tuning mode always sit immediately
+/// before it. A constant offset reads a different field on each.
+#[test]
+fn mode_flags_are_readable_on_both_firmwares() {
+    let real = body_of("hw_state_response.bin");
+    let header = parse_header(&real).unwrap();
+    let state = PedalState::from_body(real[header.body_offset..].to_vec()).unwrap();
+
+    // The pedal was in stomp mode (slot C active), which is the annotation the
+    // capture's own slot byte agrees with.
+    assert_eq!(state.stomp_mode().unwrap(), 1);
+    assert_eq!(state.active_slot().unwrap(), Slot::C);
+    assert_eq!(state.cab_bypass().unwrap(), 0);
+
+    // The 1.1.3 transcription has a different layout; same code must read it.
+    let transcribed = fs::read(fixture("bodies/state_changed.body.bin")).unwrap();
+    let old = PedalState::from_body(transcribed[8..].to_vec()).unwrap();
+    assert_eq!(old.stomp_mode().unwrap(), 0, "1.1.3 capture is in A/B mode");
+    assert_eq!(old.cab_bypass().unwrap(), 0);
+}
+
+/// Stage management: assigning a slot must not change what is playing.
+#[test]
+fn assigning_the_inactive_slot_does_not_change_the_sound() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let mut state = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+
+    // Put it in A/B mode, playing A.
+    state.set_stomp_mode(false).unwrap();
+    state.set_active_slot(Slot::A);
+    let playing_before = state.active_preset().unwrap();
+
+    let touched = state.assign_slot(Slot::B, 11).unwrap();
+
+    assert_eq!(state.slot_preset(Slot::B), 11, "B must hold the new preset");
+    assert_eq!(
+        state.active_preset().unwrap(),
+        playing_before,
+        "what is playing must not move"
+    );
+    assert_eq!(state.active_slot().unwrap(), Slot::A);
+    assert!(touched.len() <= 2, "touched {touched:?}");
+}
+
+/// The A/B stomp itself: switch slots without disturbing either sound.
+#[test]
+fn switching_slots_changes_only_which_one_plays() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let mut state = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+    state.set_stomp_mode(false).unwrap();
+    state.set_active_slot(Slot::A);
+    state.assign_slot(Slot::A, 3).unwrap();
+    state.assign_slot(Slot::B, 9).unwrap();
+
+    state.switch_to_slot(Slot::B).unwrap();
+
+    assert_eq!(state.active_slot().unwrap(), Slot::B);
+    assert_eq!(state.active_preset().unwrap(), 9);
+    assert_eq!(state.slot_preset(Slot::A), 3, "A must keep its preset");
+}
+
+/// Stomp mode is what makes slot C reachable.
+#[test]
+fn stomp_mode_round_trips() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let mut state = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+
+    state.set_stomp_mode(false).unwrap();
+    assert_eq!(state.stomp_mode().unwrap(), 0);
+    state.set_stomp_mode(true).unwrap();
+    assert_eq!(state.stomp_mode().unwrap(), 1);
+
+    // Toggling the mode must not disturb what the slots hold.
+    assert_eq!(state.slot_preset(Slot::A), 15);
+    assert_eq!(state.slot_preset(Slot::B), 16);
+    assert_eq!(state.slot_preset(Slot::C), 1);
+}
+
+/// Input trim, found by the same anchor as the mode flags.
+#[test]
+fn input_trim_reads_and_writes_on_real_state() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let mut state = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+
+    // The capture's own annotation: inputTrim 0.0 on this pedal.
+    assert_eq!(state.input_trim().unwrap(), 0.0);
+
+    let touched = state.set_input_trim(-6.0).unwrap();
+    assert_eq!(state.input_trim().unwrap(), -6.0);
+    assert_eq!(touched.len(), 4, "an f32 is four bytes");
+
+    // A knob turned past its stop should stop, not fail.
+    state.set_input_trim(100.0).unwrap();
+    assert_eq!(state.input_trim().unwrap(), 15.0);
+    state.set_input_trim(-100.0).unwrap();
+    assert_eq!(state.input_trim().unwrap(), -15.0);
+}
+
+/// Every stage edit must stay inside the offsets it declares.
+#[test]
+fn stage_edits_never_touch_more_than_they_intend() {
+    let body = body_of("hw_state_response.bin");
+    let header = parse_header(&body).unwrap();
+    let base = PedalState::from_body(body[header.body_offset..].to_vec()).unwrap();
+    use pinex_proto::message::edit_state;
+
+    // Each of these goes through the same verification as a preset change.
+    edit_state(&base, |s| s.assign_slot(Slot::B, 7)).expect("assign");
+    edit_state(&base, |s| s.switch_to_slot(Slot::A)).expect("switch");
+    edit_state(&base, |s| s.set_stomp_mode(false).map(|o| vec![o])).expect("mode");
+    edit_state(&base, |s| s.set_input_trim(-3.0).map(|o| o.to_vec())).expect("gain");
+
+    // And the frames they produce are decodable state writes.
+    let (frame, touched) = edit_state(&base, |s| s.assign_slot(Slot::B, 7)).unwrap();
+    let payload = decode_frame(&frame).unwrap();
+    let out = parse_header_unvalidated(&payload).unwrap();
+    assert_eq!(out.msg_type, MessageType::StateUpdate);
+    assert!(touched.len() <= 2, "assign touched {touched:?}");
+}
+
 /// The write path, exercised against the pedal's own state bytes.
 ///
 /// This is the closest thing to a dry run of an actual preset change that can

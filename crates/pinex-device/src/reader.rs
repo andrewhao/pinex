@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use pinex_proto::message::{parse_header, parse_hello, parse_preset_name, MessageType, PresetInfo};
-use pinex_proto::state::PedalState;
+use pinex_proto::state::{PedalState, Slot};
 use pinex_proto::{decode_frame, FrameAccumulator};
 
 use crate::transport::Transport;
@@ -55,11 +55,23 @@ pub enum PedalEvent {
 /// the port. Kept separate from [`PedalEvent`] so a request can never be
 /// mistaken for a fact: a `SetPreset` is an intention, and only the
 /// [`PedalEvent::StateChanged`] that follows is evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Eq`: `SetGain` carries a float.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
     RequestState,
     RequestPreset(u8),
     SetPreset(u8),
+    /// Put a preset into a slot without changing which slot plays.
+    AssignSlot(Slot, u8),
+    /// Switch which slot plays, changing neither slot's contents.
+    SwitchToSlot(Slot),
+    /// Put a preset into a slot and switch to it, as one write.
+    LoadSlot(Slot, u8),
+    /// A/B mode (`false`) or stomp mode (`true`).
+    SetStompMode(bool),
+    /// Input trim, in dB, clamped by the codec to what the pedal accepts.
+    SetGain(f32),
 }
 
 /// A running reader thread. Dropping this asks the thread to stop and joins it.
