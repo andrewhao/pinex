@@ -103,11 +103,20 @@ where
         let playing = view.active_slot == Some(slot);
         let editing = view.selected == slot;
 
-        // Slot letter, above its box.
+        // Slot letter and its preset number share one line, so the boxes get
+        // the height instead. "A 01" reads as a unit anyway.
         let letter_color = if playing { PLAYING } else { DIM };
+        let label = match view.slot_preset(slot) {
+            Some(preset) => format!(
+                "{} {:02}",
+                if slot == Slot::A { "A" } else { "B" },
+                preset + 1
+            ),
+            None => (if slot == Slot::A { "A --" } else { "B --" }).to_string(),
+        };
         Text::with_alignment(
-            if slot == Slot::A { "A" } else { "B" },
-            Point::new(x + 29, 20),
+            &label,
+            Point::new(x + 29, 21),
             MonoTextStyle::new(&FONT_9X15_BOLD, letter_color),
             Alignment::Center,
         )
@@ -131,7 +140,7 @@ where
             view.slot_color_for(slot)
         };
 
-        let area = Rectangle::new(Point::new(x, 24), Size::new(59, 70));
+        let area = Rectangle::new(Point::new(x, 26), Size::new(59, 84));
         match (preset, name) {
             (Some(_), Some(name)) => {
                 skin::draw(target, area, &Pedal::new(name, color, playing))?;
@@ -143,37 +152,36 @@ where
             }
         }
 
-        // Preset number under the box.
-        if let Some(preset) = preset {
-            Text::with_alignment(
-                &format!("{:02}", preset + 1),
-                Point::new(x + 29, 106),
-                MonoTextStyle::new(&FONT_9X15_BOLD, if playing { PLAYING } else { TEXT }),
-                Alignment::Center,
-            )
-            .draw(target)?;
-        }
-
-        // Editing marker: a bar under the slot you are changing.
+        // Editing marker: a bar under the slot you are changing, plus the
+        // preset it would become. The number under the box is what you get if
+        // you press; the number in the header is what is loaded now.
         if editing {
-            Rectangle::new(Point::new(x, 110), Size::new(59, 2))
+            Rectangle::new(Point::new(x, 112), Size::new(59, 2))
                 .into_styled(PrimitiveStyle::with_fill(WARN))
                 .draw(target)?;
+            if let Some(preset) = preset {
+                Text::with_alignment(
+                    &format!("> {:02}", preset + 1),
+                    Point::new(x + 29, 124),
+                    MonoTextStyle::new(&FONT_6X10, WARN),
+                    Alignment::Center,
+                )
+                .draw(target)?;
+            }
         }
     }
 
-    let hint = if view.active_slot == Some(view.selected) {
-        "press = load (live)"
-    } else {
-        "press = load + go"
-    };
-    Text::with_alignment(
-        hint,
-        Point::new(WIDTH as i32 / 2, 124),
-        MonoTextStyle::new(&FONT_6X10, DIM),
-        Alignment::Center,
-    )
-    .draw(target)?;
+    // Warn when the slot being edited is the one making sound: pressing then
+    // changes the tone immediately rather than silently staging it.
+    if view.active_slot == Some(view.selected) {
+        Text::with_alignment(
+            "LIVE",
+            Point::new(WIDTH as i32 / 2, 21),
+            MonoTextStyle::new(&FONT_6X10, WARN),
+            Alignment::Center,
+        )
+        .draw(target)?;
+    }
     Ok(())
 }
 
@@ -227,12 +235,12 @@ where
 
     // A wide bar rather than a dial: at this size a bar's fill is readable at a
     // glance, where a pointer angle is not.
-    let bar = Rectangle::new(Point::new(12, 46), Size::new(104, 18));
+    let bar = Rectangle::new(Point::new(12, 52), Size::new(104, 24));
     bar.into_styled(PrimitiveStyle::with_stroke(DIM, 1))
         .draw(target)?;
     let filled = (102.0 * fraction) as u32;
     if filled > 0 {
-        Rectangle::new(Point::new(13, 47), Size::new(filled, 16))
+        Rectangle::new(Point::new(13, 53), Size::new(filled, 22))
             .into_styled(PrimitiveStyle::with_fill(if view.gain_db > 0.0 {
                 WARN
             } else {
@@ -242,28 +250,35 @@ where
     }
 
     // Centre tick: unity gain, the value you return to.
-    Rectangle::new(Point::new(63, 42), Size::new(1, 26))
+    Rectangle::new(Point::new(63, 46), Size::new(1, 36))
         .into_styled(PrimitiveStyle::with_fill(TEXT))
         .draw(target)?;
 
     Text::with_alignment(
-        &format!("{:+.1} dB", view.gain_db),
-        Point::new(WIDTH as i32 / 2, 34),
-        MonoTextStyle::new(&FONT_9X15_BOLD, TEXT),
+        &format!("{:+.1}", view.gain_db),
+        Point::new(WIDTH as i32 / 2, 38),
+        MonoTextStyle::new(&FONT_10X20, TEXT),
+        Alignment::Center,
+    )
+    .draw(target)?;
+    Text::with_alignment(
+        "dB",
+        Point::new(WIDTH as i32 / 2, 92),
+        MonoTextStyle::new(&FONT_6X10, DIM),
         Alignment::Center,
     )
     .draw(target)?;
 
     Text::with_alignment(
         &format!("{MIN_INPUT_TRIM_DB:.0}"),
-        Point::new(12, 76),
+        Point::new(12, 86),
         MonoTextStyle::new(&FONT_6X10, DIM),
         Alignment::Left,
     )
     .draw(target)?;
     Text::with_alignment(
         &format!("+{MAX_INPUT_TRIM_DB:.0}"),
-        Point::new(WIDTH as i32 - 12, 76),
+        Point::new(WIDTH as i32 - 12, 86),
         MonoTextStyle::new(&FONT_6X10, DIM),
         Alignment::Right,
     )
@@ -271,7 +286,7 @@ where
 
     Text::with_alignment(
         &format!("fw {firmware}"),
-        Point::new(WIDTH as i32 / 2, 118),
+        Point::new(WIDTH as i32 / 2, 112),
         MonoTextStyle::new(&FONT_6X10, DIM),
         Alignment::Center,
     )

@@ -236,6 +236,104 @@ fn a_pedal_plugged_in_later_is_picked_up() {
     assert_eq!(app.browser().view().active, Some(1));
 }
 
+/// The headline requirement: choose what is in A and what is in B, and step
+/// between them, without either assignment disturbing the other.
+#[test]
+fn slots_can_be_assigned_independently_and_stepped_between() {
+    let (sim, mut app) = app_with([]);
+    app.start().unwrap();
+    app.settle_until(BUDGET, |b| b.view().active.is_some());
+
+    // The captured pedal is in stomp mode. Paging cycles Slots -> Stomp -> Gain,
+    // so walk round to the A/B page; arriving there must take the *pedal* with
+    // it, not just the display.
+    for _ in 0..3 {
+        if app.browser().view().screen == pinex_ui::browser::Screen::Slots {
+            break;
+        }
+        app.step_with(InputEvent::Page);
+        app.settle(Duration::from_millis(300));
+    }
+    assert_eq!(
+        app.browser().view().screen,
+        pinex_ui::browser::Screen::Slots,
+        "should have reached the A/B page"
+    );
+    assert!(
+        app.settle_until(BUDGET, |b| !b.view().stomp_mode),
+        "arriving on A/B must put the pedal in A/B mode"
+    );
+
+    // Put preset 3 into whichever slot is selected, and go there.
+    let first = app.browser().view().selected;
+    for _ in 0..3 {
+        app.step_with(InputEvent::Next);
+    }
+    let want_first = app.browser().view().cursor;
+    app.step_with(InputEvent::Select);
+    assert!(
+        app.settle_until(BUDGET, |b| b.view().slot_preset(first) == Some(want_first)),
+        "slot {first:?} should hold preset {want_first}"
+    );
+
+    // Switch to editing the other slot and give it something different.
+    app.step_with(InputEvent::Mode);
+    let second = app.browser().view().selected;
+    assert_ne!(second, first, "Mode must move to the other slot");
+
+    for _ in 0..5 {
+        app.step_with(InputEvent::Next);
+    }
+    let want_second = app.browser().view().cursor;
+    app.step_with(InputEvent::Select);
+    assert!(
+        app.settle_until(BUDGET, |b| b.view().slot_preset(second)
+            == Some(want_second)),
+        "slot {second:?} should hold preset {want_second}"
+    );
+
+    // The first slot must still hold what it was given — assigning one slot
+    // may never disturb the other.
+    let view = app.browser().view();
+    assert_eq!(
+        view.slot_preset(first),
+        Some(want_first),
+        "assigning {second:?} disturbed {first:?}"
+    );
+    assert_eq!(sim.active_preset(), want_second, "the pedal followed");
+    assert!(app.errors.is_empty(), "errors: {:?}", app.errors);
+}
+
+/// Gain is the one control that applies as it moves, like a knob.
+#[test]
+fn gain_changes_reach_the_pedal() {
+    let (_sim, mut app) = app_with([]);
+    app.start().unwrap();
+    app.settle_until(BUDGET, |b| b.view().active.is_some());
+
+    // Page around to Gain.
+    for _ in 0..3 {
+        app.step_with(InputEvent::Page);
+        if app.browser().view().screen == pinex_ui::browser::Screen::Gain {
+            break;
+        }
+    }
+    assert_eq!(app.browser().view().screen, pinex_ui::browser::Screen::Gain);
+
+    let before = app.browser().view().gain_db;
+    for _ in 0..4 {
+        app.step_with(InputEvent::Next);
+    }
+    app.settle(Duration::from_millis(400));
+
+    let after = app.browser().view().gain_db;
+    assert!(
+        after > before,
+        "gain should have risen: {before} -> {after}"
+    );
+    assert!(app.errors.is_empty(), "errors: {:?}", app.errors);
+}
+
 /// The display must never claim a preset is playing when the pedal is gone.
 #[test]
 fn losing_the_pedal_shows_no_pedal_and_drops_the_active_preset() {
