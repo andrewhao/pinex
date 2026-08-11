@@ -130,12 +130,14 @@ pub fn classify(name: &str) -> Archetype {
     Archetype::Unknown
 }
 
-/// Strip the capture-pack prefix and trailing variant numbering, leaving the
-/// part worth putting on a badge.
+/// Strip only the capture-pack prefix, keeping everything that identifies the
+/// sound.
 ///
-/// "TF MORNIING GLORY - BRIGHT 1" becomes "MORNIING GLORY". The pedal's own
-/// spelling is kept, typos included — it is the player's rig, not ours to
-/// correct.
+/// "TF MORNIING GLORY - BRIGHT 1" becomes "MORNIING GLORY - BRIGHT 1". The
+/// variant is **not** dropped: "PROTEIN - BLUE 1" and "PROTEIN - GREEN 2" are
+/// different sounds, and rendering both as "PROTEIN" made the panel show them
+/// identically. The pedal's own spelling is kept, typos included — it is the
+/// player's rig, not ours to correct.
 pub fn short_name(name: &str) -> &str {
     let trimmed = name.trim();
     // Drop a short pack prefix like "TF". Requiring no vowels is what keeps it
@@ -153,10 +155,16 @@ pub fn short_name(name: &str) -> &str {
         }
         _ => trimmed,
     };
-    // Drop everything from the first " - ", which is the variant.
-    match without_prefix.split_once(" - ") {
+    without_prefix.trim()
+}
+
+/// The part to put on a small badge, where the full name will not fit.
+///
+/// Drops the variant, which the caller is expected to show elsewhere.
+pub fn badge_name(name: &str) -> &str {
+    match short_name(name).split_once(" - ") {
         Some((head, _)) => head.trim(),
-        None => without_prefix.trim(),
+        None => short_name(name),
     }
 }
 
@@ -249,7 +257,7 @@ where
 
     // Wrap rather than truncate: "MORNIING GLORY" cut to "MORNIIN" is not a
     // name a player recognises at a glance.
-    let label = short_name(pedal.name);
+    let label = badge_name(pedal.name);
     let cols = ((w - 6) / 5).max(1) as usize;
     let text_color = if pedal.lit { Rgb565::WHITE } else { trim };
     for (line, chunk) in wrap(label, cols).iter().take(2).enumerate() {
@@ -372,7 +380,7 @@ where
 
 /// Break `text` into lines of at most `cols` characters, on word boundaries
 /// where it can and mid-word where a single word is too long.
-fn wrap(text: &str, cols: usize) -> Vec<String> {
+pub fn wrap(text: &str, cols: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
 
@@ -464,9 +472,22 @@ mod tests {
 
     #[test]
     fn the_badge_name_drops_the_pack_prefix_and_the_variant() {
-        assert_eq!(short_name("TF MORNIING GLORY - BRIGHT 1"), "MORNIING GLORY");
-        assert_eq!(short_name("TF PROTEIN - BLUE 1"), "PROTEIN");
-        assert_eq!(short_name("TF TILT - 1 ADV"), "TILT");
+        // The variant survives: it is what tells two presets apart.
+        assert_eq!(
+            short_name("TF MORNIING GLORY - BRIGHT 1"),
+            "MORNIING GLORY - BRIGHT 1"
+        );
+        assert_eq!(short_name("TF PROTEIN - BLUE 1"), "PROTEIN - BLUE 1");
+        assert_eq!(short_name("TF PROTEIN - GREEN 2"), "PROTEIN - GREEN 2");
+        assert_ne!(
+            short_name("TF PROTEIN - BLUE 1"),
+            short_name("TF PROTEIN - GREEN 2"),
+            "two different sounds must not render identically"
+        );
+
+        // The badge drops the variant, because it has no room for it.
+        assert_eq!(badge_name("TF PROTEIN - BLUE 1"), "PROTEIN");
+        assert_eq!(badge_name("TF TILT - 1 ADV"), "TILT");
         // A real word is not a pack prefix: "BIG" has a vowel, "TF" does not.
         assert_eq!(short_name("BIG MUFF"), "BIG MUFF");
         assert_eq!(short_name("JHS MORNING GLORY"), "MORNING GLORY");

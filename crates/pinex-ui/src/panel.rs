@@ -12,7 +12,7 @@
 //! gets called out; the name is secondary; and a disconnected pedal says so in
 //! words rather than by showing stale information.
 
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10, FONT_9X15_BOLD};
+use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_5X8, FONT_6X10, FONT_9X15_BOLD};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -20,7 +20,7 @@ use embedded_graphics::primitives::{CornerRadii, PrimitiveStyle, Rectangle, Roun
 use embedded_graphics::text::{Alignment, Baseline, Text};
 
 use crate::browser::{Connection, Screen, View};
-use crate::skin::{self, Pedal};
+use crate::skin::{self, wrap, Pedal};
 use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MIN_INPUT_TRIM_DB};
 
 /// The HAT's panel geometry.
@@ -51,6 +51,51 @@ where
             Screen::Gain => draw_gain(target, view, firmware),
         },
     }
+}
+
+/// How many characters of the small font fit across the whole panel.
+const FULL_COLS: usize = (WIDTH / 5) as usize;
+
+/// Draw a full preset name across the bottom of the panel, wrapped.
+///
+/// The boxes are only 59px wide, which is eleven characters — enough for a
+/// badge and nothing more. The name that actually identifies the sound gets the
+/// full panel width and as many lines as it needs, because a player checking
+/// "is this the bright one or the dark one" is reading the variant, not the
+/// pedal name.
+fn draw_wrapped<D>(
+    target: &mut D,
+    text: Option<&str>,
+    top: i32,
+    max_lines: usize,
+    color: Rgb565,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let Some(text) = text else { return Ok(()) };
+    let lines = wrap(text, FULL_COLS);
+
+    for (index, line) in lines.iter().take(max_lines).enumerate() {
+        // The last line we can show gets an ellipsis if more remains, so a
+        // clipped name never looks like a complete one.
+        let is_last_shown = index + 1 == max_lines && lines.len() > max_lines;
+        let shown = if is_last_shown {
+            let mut truncated: String = line.chars().take(FULL_COLS - 1).collect();
+            truncated.push('~');
+            truncated
+        } else {
+            line.clone()
+        };
+        Text::with_alignment(
+            &shown,
+            Point::new(WIDTH as i32 / 2, top + index as i32 * 9),
+            MonoTextStyle::new(&FONT_5X8, color),
+            Alignment::Center,
+        )
+        .draw(target)?;
+    }
+    Ok(())
 }
 
 /// A header strip: page name left, a marker for the page you are on.
@@ -140,7 +185,7 @@ where
             view.slot_color_for(slot)
         };
 
-        let area = Rectangle::new(Point::new(x, 26), Size::new(59, 84));
+        let area = Rectangle::new(Point::new(x, 26), Size::new(59, 74));
         match (preset, name) {
             (Some(_), Some(name)) => {
                 skin::draw(target, area, &Pedal::new(name, color, playing))?;
@@ -156,20 +201,19 @@ where
         // preset it would become. The number under the box is what you get if
         // you press; the number in the header is what is loaded now.
         if editing {
-            Rectangle::new(Point::new(x, 112), Size::new(59, 2))
+            Rectangle::new(Point::new(x, 101), Size::new(59, 2))
                 .into_styled(PrimitiveStyle::with_fill(WARN))
                 .draw(target)?;
-            if let Some(preset) = preset {
-                Text::with_alignment(
-                    &format!("> {:02}", preset + 1),
-                    Point::new(x + 29, 124),
-                    MonoTextStyle::new(&FONT_6X10, WARN),
-                    Alignment::Center,
-                )
-                .draw(target)?;
-            }
         }
     }
+
+    // The full name of what the selected slot would become if you pressed.
+    // The number is part of the same string rather than a separate label, so a
+    // long name cannot run underneath it.
+    let preview = view
+        .cursor_name
+        .map(|name| format!("{:02} {}", view.cursor + 1, skin::short_name(name)));
+    draw_wrapped(target, preview.as_deref(), 110, 2, TEXT)?;
 
     // Warn when the slot being edited is the one making sound: pressing then
     // changes the tone immediately rather than silently staging it.
@@ -196,7 +240,7 @@ where
     let showing_loaded = loaded == Some(view.cursor);
     let name = view.cursor_name.unwrap_or("...");
 
-    let area = Rectangle::new(Point::new(24, 16), Size::new(80, 84));
+    let area = Rectangle::new(Point::new(24, 16), Size::new(80, 76));
     skin::draw(
         target,
         area,
@@ -205,21 +249,14 @@ where
 
     Text::with_alignment(
         &format!("{:02}", view.cursor + 1),
-        Point::new(WIDTH as i32 / 2, 114),
+        Point::new(WIDTH as i32 / 2, 108),
         MonoTextStyle::new(&FONT_9X15_BOLD, if showing_loaded { PLAYING } else { TEXT }),
         Alignment::Center,
     )
     .draw(target)?;
 
-    if !showing_loaded {
-        Text::with_alignment(
-            "press to load",
-            Point::new(WIDTH as i32 / 2, 125),
-            MonoTextStyle::new(&FONT_6X10, DIM),
-            Alignment::Center,
-        )
-        .draw(target)?;
-    }
+    let preview = view.cursor_name.map(skin::short_name);
+    draw_wrapped(target, preview, 118, 2, TEXT)?;
     Ok(())
 }
 
@@ -481,6 +518,58 @@ mod tests {
         let left = (0..64).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         let right = (64..WIDTH).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         assert!(left && right, "both slots must be visible");
+    }
+
+    /// The complaint that prompted the full-name area: names were cut off.
+    /// Every real preset name must fit the space without an ellipsis.
+    #[test]
+    fn every_real_preset_name_fits_the_full_name_area() {
+        let names = [
+            "TF BENSON PREAMP - 1",
+            "TF MORNIING GLORY - BRIGHT 1",
+            "TF PROTEIN - BLUE 1",
+            "TF PROTEIN - GREEN 3",
+            "TF TILT - BOOST FULL",
+            "TF TILT - 1 ADV",
+        ];
+        for name in names {
+            let lines = crate::skin::wrap(crate::skin::short_name(name), FULL_COLS);
+            assert!(
+                lines.len() <= 2,
+                "{name:?} needs {} lines, only 2 fit",
+                lines.len()
+            );
+            // Nothing lost: the wrapped words rejoin to the original.
+            assert_eq!(
+                lines.join(" "),
+                crate::skin::short_name(name),
+                "{name:?} lost characters in wrapping"
+            );
+        }
+    }
+
+    /// Two presets differing only by variant must not render identically.
+    #[test]
+    fn variants_are_visibly_different() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let render = |name| {
+            let mut panel = Buffer::new();
+            let view = View {
+                cursor_name: Some(name),
+                slot_presets: Some([0, 1, 2]),
+                active_slot: Some(Slot::A),
+                ..View::stub(&c)
+            };
+            draw(&mut panel, &view).unwrap();
+            panel.pixels
+        };
+        assert_ne!(
+            render("TF PROTEIN - BLUE 1"),
+            render("TF PROTEIN - GREEN 2"),
+            "BLUE and GREEN must be tellable apart on the panel"
+        );
     }
 
     #[test]
