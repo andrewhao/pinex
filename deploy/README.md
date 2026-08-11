@@ -1,12 +1,27 @@
 # Deploying to a Raspberry Pi
 
+One command:
+
 ```sh
-cargo build --release --target aarch64-unknown-linux-gnu
-scp target/aarch64-unknown-linux-gnu/release/pinex pi:/usr/local/bin/
-scp deploy/99-tonex.rules pi:/etc/udev/rules.d/
-scp deploy/pinex.service pi:/etc/systemd/system/
-ssh pi 'sudo udevadm control --reload && sudo systemctl enable --now pinex'
+./deploy/deploy.sh pi@rpi3.local
 ```
+
+It detects whether the Pi runs 32- or 64-bit userland and builds the matching
+target — a Pi 3 can be either, and the wrong binary fails with a confusing
+"cannot execute binary file".
+
+## Toolchain
+
+Cross-compiling from macOS needs a linker for the target. `cargo-zigbuild` uses
+zig's bundled one, which needs no Docker daemon:
+
+```sh
+brew install zig
+cargo install cargo-zigbuild
+```
+
+The design doc named `cross` + Docker Desktop. Either works; zigbuild was chosen
+because it has no daemon to start and builds in ~30s.
 
 ## Build the Pi image without the simulator
 
@@ -35,3 +50,29 @@ already asserted, so that is not the cause.
 
 A power cycle of the pedal clears it. Worth pacing bulk preset fetches if it
 recurs — see the open questions in `docs/plans/README.md`.
+
+## Verified on hardware
+
+A Pi 3 (64-bit, kernel 6.18) with the pedal on `/dev/ttyACM0`, firmware 1.3.17:
+
+- Handshake, all twenty preset names and colours, over USB from the Pi
+- A preset change through the browser UI, and via `verify_write` — both PASS,
+  both restored the original preset
+- Running as a systemd **user** service with `NRestarts=0`, which is the direct
+  evidence the `/dev/null` stdin bug is gone; before the fix this crash-looped
+
+Enabled at boot with `loginctl enable-linger pi`, so the user service starts
+without anyone logging in.
+
+## If you have root
+
+The unprivileged install addresses `/dev/ttyACM0` directly. For the stable
+`/dev/tonex` name and a system-wide service:
+
+```sh
+sudo cp deploy/99-tonex.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=tty
+```
+
+Then re-run `deploy.sh`, which takes the privileged path automatically once
+passwordless sudo is available.

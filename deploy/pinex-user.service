@@ -1,0 +1,15 @@
+[Unit]
+Description=Pinex — Tonex ONE preset browser (user service)
+
+[Service]
+Type=simple
+# No udev symlink without root, so address the CDC-ACM node directly.
+ExecStart=%h/bin/pinex /dev/ttyACM0
+Restart=always
+RestartSec=2
+Environment=PINEX_WEB_PORT=8080
+# stdin is /dev/null here. The app treats that as "no keyboard" and keeps
+# running rather than quitting — see pinex_input::EndOfInput.
+
+[Install]
+WantedBy=default.target

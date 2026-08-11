@@ -26,14 +26,25 @@ use std::sync::{Arc, Mutex};
 /// How long to wait for input before servicing pedal events.
 const TICK: Duration = Duration::from_millis(50);
 
+/// How often to retry opening an absent pedal. Slow enough not to hammer USB.
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
+
 pub struct App<I: InputSource, R: Renderer> {
-    pedal: Pedal,
+    /// `None` while no pedal is open. The loop keeps running and shows
+    /// "NO PEDAL" rather than exiting — a controller that dies when the pedal
+    /// is unplugged would, under `Restart=always`, become a crash loop.
+    pedal: Option<Pedal>,
+    /// Where to look for the pedal when reconnecting.
+    device: Option<std::path::PathBuf>,
+    next_reconnect: std::time::Instant,
     input: I,
     renderer: R,
     browser: PresetBrowser,
     /// The pedal's own most recent state. Every write starts from these bytes;
     /// without one we cannot safely build a preset change, so we decline to try.
     last_state: Option<PedalState>,
+    /// The last frame handed to the renderer, so identical ones are skipped.
+    last_frame: Option<Vec<String>>,
     /// Reported rather than swallowed, and surfaced on the display.
     pub errors: Vec<String>,
     /// Shared with the debug web page, when one is running.
@@ -43,11 +54,14 @@ pub struct App<I: InputSource, R: Renderer> {
 impl<I: InputSource, R: Renderer> App<I, R> {
     pub fn new(pedal: Pedal, input: I, renderer: R) -> Self {
         Self {
-            pedal,
+            pedal: Some(pedal),
+            device: None,
+            next_reconnect: std::time::Instant::now(),
             input,
             renderer,
             browser: PresetBrowser::new(),
             last_state: None,
+            last_frame: None,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
@@ -58,10 +72,54 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         Arc::clone(&self.snapshot)
     }
 
+    /// Build with a device path, reconnecting whenever the pedal is absent.
+    ///
+    /// The pedal may be unplugged mid-set, or plugged in after the service
+    /// starts. Neither should end the program.
+    pub fn reconnecting(device: std::path::PathBuf, input: I, renderer: R) -> Self {
+        Self {
+            pedal: None,
+            device: Some(device),
+            next_reconnect: std::time::Instant::now(),
+            input,
+            renderer,
+            browser: PresetBrowser::new(),
+            last_state: None,
+            last_frame: None,
+            errors: Vec::new(),
+            snapshot: Arc::new(Mutex::new(Snapshot::default())),
+        }
+    }
+
     /// Open the conversation. The pedal answers with its firmware version,
     /// which is what triggers the initial sync.
     pub fn start(&mut self) -> std::io::Result<()> {
-        self.pedal.hello()
+        match &mut self.pedal {
+            Some(pedal) => pedal.hello(),
+            None => Ok(()),
+        }
+    }
+
+    /// Try to (re)open the pedal, at most every couple of seconds.
+    fn try_reconnect(&mut self) {
+        let Some(device) = self.device.clone() else {
+            return;
+        };
+        if self.pedal.is_some() || std::time::Instant::now() < self.next_reconnect {
+            return;
+        }
+        self.next_reconnect = std::time::Instant::now() + RECONNECT_INTERVAL;
+
+        if !device.exists() {
+            return;
+        }
+        if let Ok(mut pedal) = Pedal::open(&device) {
+            if pedal.hello().is_ok() {
+                self.pedal = Some(pedal);
+                // The names we already have stay valid; the browser re-syncs
+                // when the Connected event lands.
+            }
+        }
     }
 
     /// Run one iteration: input, then pedal events, then render.
@@ -77,10 +135,21 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             commands.extend(self.browser.handle(event));
         }
 
+        self.try_reconnect();
+
         // Drain everything the pedal has said since last time.
-        while let Ok(event) = self.pedal.next_event(Duration::from_millis(0)) {
+        while let Some(event) = self
+            .pedal
+            .as_ref()
+            .and_then(|p| p.next_event(Duration::from_millis(0)).ok())
+        {
             if let PedalEvent::StateChanged(state) = &event {
                 self.last_state = Some(state.clone());
+            }
+            if event == PedalEvent::Disconnected {
+                // Drop the handle so try_reconnect will look again.
+                self.pedal = None;
+                self.last_state = None;
             }
             self.log_frame(&event);
             commands.extend(self.browser.apply(&event));
@@ -92,7 +161,18 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             }
         }
 
-        self.renderer.render(&self.browser.view());
+        // Render only when something actually changed. The loop ticks every
+        // 50 ms; rendering unconditionally meant ~20 identical lines a second
+        // into the journal, forever. A display that redraws an unchanged frame
+        // is also just wasted SPI traffic on the Pi.
+        {
+            let view = self.browser.view();
+            let frame = pinex_ui::lines(&view);
+            if self.last_frame.as_ref() != Some(&frame) {
+                self.renderer.render(&view);
+                self.last_frame = Some(frame);
+            }
+        }
         self.publish_snapshot();
         true
     }
@@ -115,6 +195,9 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         snapshot.cursor = view.cursor;
         snapshot.names = (0..pinex_proto::state::MAX_PRESETS)
             .map(|i| self.browser.name_at(i).map(str::to_string))
+            .collect();
+        snapshot.colors = (0..pinex_proto::state::MAX_PRESETS)
+            .filter_map(|i| self.browser.color_at(i))
             .collect();
     }
 
@@ -208,9 +291,12 @@ impl<I: InputSource, R: Renderer> App<I, R> {
     }
 
     fn execute(&mut self, command: Command) -> Result<(), String> {
+        let Some(pedal) = self.pedal.as_mut() else {
+            return Err("no pedal connected".to_string());
+        };
         match command {
-            Command::RequestState => self.pedal.request_state().map_err(|e| e.to_string()),
-            Command::RequestPreset(n) => self.pedal.request_preset(n).map_err(|e| e.to_string()),
+            Command::RequestState => pedal.request_state().map_err(|e| e.to_string()),
+            Command::RequestPreset(n) => pedal.request_preset(n).map_err(|e| e.to_string()),
             Command::SetPreset(n) => {
                 // Refuse rather than guess: a write built from a state we do not
                 // have would be a write of bytes we invented.
@@ -221,7 +307,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
                 };
                 let (frame, _touched) =
                     message::set_preset(current, n).map_err(|e| e.to_string())?;
-                self.pedal.send_frame(&frame).map_err(|e| e.to_string())
+                pedal.send_frame(&frame).map_err(|e| e.to_string())
             }
         }
     }

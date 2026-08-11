@@ -64,6 +64,8 @@ impl View<'_> {
 pub struct PresetBrowser {
     connection: Connection,
     names: Vec<Option<String>>,
+    /// Per-preset RGB, as the pedal lights its own ring. Read from the state.
+    colors: Vec<[u8; 3]>,
     cursor: u8,
     active: Option<u8>,
     pending: Option<u8>,
@@ -88,6 +90,11 @@ impl PresetBrowser {
             pending: self.pending.is_some(),
             last_error: self.last_error.as_deref(),
         }
+    }
+
+    /// The pedal's own colour for `index`, once a state has arrived.
+    pub fn color_at(&self, index: u8) -> Option<[u8; 3]> {
+        self.colors.get(index as usize).copied()
     }
 
     /// The name known for `index`, if the pedal has reported it.
@@ -120,6 +127,11 @@ impl PresetBrowser {
                 Vec::new()
             }
             PedalEvent::StateChanged(state) => {
+                // The pedal lights each preset a colour; mirror it so the
+                // display can agree with the hardware rather than invent its own.
+                if let Ok(colors) = state.preset_colors() {
+                    self.colors = colors;
+                }
                 match state.active_preset() {
                     Ok(active) => {
                         let first_sync = self.active.is_none();
@@ -361,6 +373,35 @@ mod tests {
         let mut b = PresetBrowser::new();
         assert_eq!(b.handle(InputEvent::Select), Vec::new());
         assert!(!b.view().pending);
+    }
+
+    /// The pedal lights each preset a colour; the display should agree with the
+    /// hardware rather than invent its own palette.
+    #[test]
+    fn preset_colours_arrive_with_the_state() {
+        let mut b = connected();
+        assert_eq!(b.color_at(0), None, "unknown until a state arrives");
+
+        // A body carrying a well-formed 20-entry colour array.
+        let mut raw = vec![0u8; 32];
+        raw.push(0xBA);
+        raw.push(MAX_PRESETS);
+        for i in 0..MAX_PRESETS {
+            raw.extend_from_slice(&[0xB9, 0x03, i, 0x80, 0xFF, 0x00]);
+        }
+        raw.extend_from_slice(&[0u8; 32]);
+        let len = raw.len();
+        raw[len - pinex_proto::state::offset_from_end::CURRENT_SLOT] = Slot::A as u8;
+        raw[len - pinex_proto::state::offset_from_end::SLOT_A_PRESET] = 0;
+
+        b.apply(&PedalEvent::StateChanged(
+            PedalState::from_body(raw).unwrap(),
+        ));
+
+        assert_eq!(b.color_at(0), Some([0, 255, 0]));
+        assert_eq!(b.color_at(5), Some([5, 255, 0]));
+        assert_eq!(b.color_at(19), Some([19, 255, 0]));
+        assert_eq!(b.color_at(20), None, "no colour beyond the preset range");
     }
 
     #[test]

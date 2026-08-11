@@ -38,6 +38,8 @@ pub struct Snapshot {
     pub active_name: Option<String>,
     pub cursor: u8,
     pub names: Vec<Option<String>>,
+    /// Per-preset RGB, mirroring the colour the pedal lights for each preset.
+    pub colors: Vec<[u8; 3]>,
     pub frames: Vec<FrameRecord>,
 }
 
@@ -103,8 +105,16 @@ pub fn render_page(snapshot: &Snapshot) -> String {
         } else {
             ""
         };
+        // The swatch is the pedal's own colour for this preset, not ours.
+        let swatch = match snapshot.colors.get(i) {
+            Some([r, g, b]) => format!(
+                "<span style=\"display:inline-block;width:.8rem;height:.8rem;\
+                 border-radius:2px;background:rgb({r},{g},{b})\"></span>"
+            ),
+            None => String::new(),
+        };
         html.push_str(&format!(
-            "<tr><td>{marker}</td><td>{:02}</td><td>{}</td></tr>",
+            "<tr><td>{marker}</td><td>{swatch}</td><td>{:02}</td><td>{}</td></tr>",
             i + 1,
             escape(name.as_deref().unwrap_or("—"))
         ));
@@ -211,6 +221,7 @@ mod tests {
                 Some("TF BENSON PREAMP - 1".into()),
                 Some("TF MORNIING GLORY - BRIGHT 1".into()),
             ],
+            colors: vec![[255, 63, 0], [47, 0, 255]],
             frames: vec![FrameRecord {
                 summary: "Hello".into(),
                 raw_hex: "7e b9 03".into(),
@@ -235,6 +246,27 @@ mod tests {
     }
 
     /// The reason this page exists: a broken parse must be visible with bytes.
+    /// The swatch must be the pedal's own colour, so the page and the hardware
+    /// cannot disagree about which preset is which.
+    #[test]
+    fn preset_colours_render_as_swatches() {
+        let page = render_page(&sample());
+        assert!(page.contains("rgb(255,63,0)"), "preset 1 swatch missing");
+        assert!(page.contains("rgb(47,0,255)"), "preset 2 swatch missing");
+    }
+
+    /// Colours can be absent (no state yet). The page must still render.
+    #[test]
+    fn a_page_without_colours_still_renders_its_names() {
+        let snapshot = Snapshot {
+            names: vec![Some("TF TILT - 1 ADV".into())],
+            ..Default::default()
+        };
+        let page = render_page(&snapshot);
+        assert!(page.contains("TF TILT - 1 ADV"));
+        assert!(!page.contains("rgb("));
+    }
+
     #[test]
     fn parse_errors_appear_with_their_raw_bytes() {
         let mut snapshot = sample();

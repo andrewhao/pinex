@@ -15,20 +15,24 @@
 
 //! ## Why there are no offsets counted from the *start* of the body
 //!
-//! There used to be. They were wrong twice over, and the second failure is the
-//! instructive one: the fields near the start of the state live inside a list
-//! whose length changes between firmware versions. Our own pedal (1.3.17) opens
-//! that list with `b9 0e` — fourteen elements — where the published 1.1.3 dump
-//! has `b9 0b`, eleven. Every start-relative offset therefore shifts, silently,
-//! on a firmware update, and reads a neighbouring field instead of erroring.
+//! The fields near the start of the state live inside a list whose length
+//! changes between firmware versions: 1.3.17 opens it with `b9 0e` — fourteen
+//! elements — where the published 1.1.3 dump has `b9 0b`, eleven. A constant
+//! offset into that region therefore reads a *different field* depending on
+//! which firmware answered, silently, with no error to notice.
 //!
-//! The end-relative offsets below do not have this problem: they have now been
-//! confirmed against both firmware generations. Anything near the start of the
-//! body must be located by *walking* the structure with
-//! [`crate::value::skip_value`], never by a constant.
+//! Both reference implementations use such constants (`COLORS = 22` and
+//! friends). Those values are correct for 1.3.17 and wrong for 1.1.3 — which
+//! is the trap: they look right against whichever pedal you happen to own, and
+//! break for someone else's.
 //!
-//! `tests/hardware_captures.rs::start_relative_offsets_would_shift_between_firmwares`
-//! pins this so the constants cannot quietly come back.
+//! So anything in that region is located by *shape* instead — see
+//! [`PedalState::preset_colors`], which finds the colour array by looking for
+//! the `0xBA` list of exactly [`MAX_PRESETS`] triples, and reads both firmware
+//! generations with the same code.
+//!
+//! The end-relative offsets below do not have this problem and are confirmed
+//! against both generations, which is why the write path uses only those.
 
 /// Offsets counted back from the end of the state body, as `len - N`.
 ///
@@ -100,6 +104,8 @@ pub enum StateError {
     PresetOutOfRange { preset: u8, max: u8 },
     /// Byte at the active-slot offset was not a slot we recognise.
     UnknownSlot { value: u8 },
+    /// No per-preset colour array of the expected shape was present.
+    NoColorArray,
 }
 
 impl std::fmt::Display for StateError {
@@ -115,6 +121,10 @@ impl std::fmt::Display for StateError {
                 write!(f, "preset {preset} out of range (0..{max})")
             }
             Self::UnknownSlot { value } => write!(f, "unknown slot byte {value:#04x}"),
+            Self::NoColorArray => write!(
+                f,
+                "no {MAX_PRESETS}-entry colour array found in the state body"
+            ),
         }
     }
 }
@@ -189,6 +199,34 @@ impl PedalState {
         self.raw[self.index_from_end(offset_from_end::BYPASS_MODE)]
     }
 
+    /// The per-preset RGB colours the pedal shows on its ring, one per preset.
+    ///
+    /// Found by *shape*, not by offset: the colour array is the `0xBA` list
+    /// holding exactly [`MAX_PRESETS`] entries, each a 3-element list. That
+    /// identification survives the firmware differences which make a constant
+    /// offset here unsafe — the enclosing list has 11 elements on firmware 1.1.3
+    /// and 14 on 1.3.17, so anything counted from the start of the body lands on
+    /// a different field depending on who answered.
+    ///
+    /// Verified against captures from both firmware generations.
+    pub fn preset_colors(&self) -> Result<Vec<[u8; 3]>, StateError> {
+        let mut index = 0usize;
+        while index < self.raw.len() {
+            let Some(&tag) = self.raw.get(index) else {
+                break;
+            };
+
+            if tag == 0xBA {
+                let mut cursor = index;
+                if let Some(colors) = read_color_array(&self.raw, &mut cursor) {
+                    return Ok(colors);
+                }
+            }
+            index += 1;
+        }
+        Err(StateError::NoColorArray)
+    }
+
     /// A4 tuning reference in Hz (e.g. 440).
     pub fn tuning_reference_hz(&self) -> u16 {
         let at = self.index_from_end(offset_from_end::TUNING_REF);
@@ -254,16 +292,18 @@ impl PedalState {
     /// Writing the preset into the *current* slot in place does stick, and costs
     /// a single byte. So:
     ///
-    /// | Active slot | Route | Verified |
+    /// | Active slot | Route | Verified on firmware 1.3.17 |
     /// |---|---|---|
-    /// | C (stomp) | write in place | yes, on firmware 1.3.17 |
-    /// | A or B | stage into the other slot, then switch | no — see below |
+    /// | C (stomp) | write in place | yes — a slot switch is reverted here |
+    /// | A or B | stage into the other slot, then switch | yes |
     ///
-    /// The A/B route keeps the double-buffering the design doc calls for, since
-    /// loading a preset into the slot being heard can be audible. It is
-    /// unverified because our pedal is in stomp mode and putting someone's rig
-    /// into A/B mode to test is not ours to do. If A/B turns out to revert too,
-    /// the fix is to use the in-place route there as well.
+    /// Both routes are now confirmed against hardware. In A/B mode all three
+    /// candidate strategies stick, and the stage-and-switch one was kept because
+    /// it is the only one that preserves the double buffering: successive
+    /// changes alternate `[B, A, B, A]`, and the slot being heard still holds
+    /// what it held. That is what keeps a preset change inaudible, and it is
+    /// measured rather than assumed — see
+    /// `crates/pinex/examples/probe_ab_alternation.rs`.
     ///
     /// Returns the offsets written, sorted, for the [`diff_offsets`] assertion.
     pub fn change_preset(&mut self, preset: u8) -> Result<Vec<usize>, StateError> {
@@ -299,6 +339,50 @@ impl PedalState {
         touched.dedup();
         Ok(touched)
     }
+}
+
+/// Read a `0xBA` list of exactly [`MAX_PRESETS`] RGB triples at `*index`.
+///
+/// Returns `None` — rather than erroring — if the shape does not match, because
+/// the caller is scanning candidate positions and a mismatch just means "not
+/// this one". Every read is bounds-checked: this walks bytes from a device we
+/// do not control.
+fn read_color_array(buf: &[u8], index: &mut usize) -> Option<Vec<[u8; 3]>> {
+    let mut cursor = *index;
+    if *buf.get(cursor)? != 0xBA {
+        return None;
+    }
+    cursor += 1;
+    if *buf.get(cursor)? != MAX_PRESETS {
+        return None;
+    }
+    cursor += 1;
+
+    let mut colors = Vec::with_capacity(MAX_PRESETS as usize);
+    for _ in 0..MAX_PRESETS {
+        if *buf.get(cursor)? != 0xB9 || *buf.get(cursor + 1)? != 3 {
+            return None;
+        }
+        cursor += 2;
+        let mut channel = [0u8; 3];
+        for slot in channel.iter_mut() {
+            // Channels above 0x7F carry an 0x80 tag; below, the byte is itself.
+            *slot = match *buf.get(cursor)? {
+                0x80 => {
+                    cursor += 2;
+                    *buf.get(cursor - 1)?
+                }
+                literal => {
+                    cursor += 1;
+                    literal
+                }
+            };
+        }
+        colors.push(channel);
+    }
+
+    *index = cursor;
+    Some(colors)
 }
 
 /// Offsets at which two buffers differ.
