@@ -44,6 +44,42 @@ pub mod pins {
     pub const KEY3: u8 = 16;
 }
 
+/// `PINEX_PANEL_ROTATION` = 0 | 90 | 180 | 270. Which way up the glass reads
+/// depends on how the unit is mounted, so it is configuration, not a constant.
+fn rotation_from_env() -> Rotation {
+    match std::env::var("PINEX_PANEL_ROTATION").as_deref() {
+        Ok("0") => Rotation::Deg0,
+        Ok("180") => Rotation::Deg180,
+        Ok("270") => Rotation::Deg270,
+        _ => Rotation::Deg90,
+    }
+}
+
+/// Where the visible 128×128 window sits inside the controller's 132×162 RAM.
+///
+/// Waveshare's driver uses (1, 2) in the panel's native orientation. Rotating
+/// by a quarter turn swaps the axes, so the offset must swap with them —
+/// otherwise the noise band simply moves to a different edge, which reads as
+/// "the fix didn't work" rather than "the offset is now on the wrong axis".
+fn default_offset(rotation: Rotation) -> (u16, u16) {
+    match rotation {
+        Rotation::Deg0 | Rotation::Deg180 => (1, 2),
+        Rotation::Deg90 | Rotation::Deg270 => (2, 1),
+    }
+}
+
+/// `PINEX_PANEL_OFFSET` = "x,y", overriding the derived default.
+fn offset_from_env(rotation: Rotation) -> (u16, u16) {
+    let Ok(raw) = std::env::var("PINEX_PANEL_OFFSET") else {
+        return default_offset(rotation);
+    };
+    let mut parts = raw.split(',').map(str::trim).map(str::parse::<u16>);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(x)), Some(Ok(y))) => (x, y),
+        _ => default_offset(rotation),
+    }
+}
+
 /// The panel's SPI clock. The ST7735S datasheet allows more, but a HAT sits on
 /// unshielded header pins; 32 MHz redraws a 128×128 frame in a few ms and has
 /// margin to spare.
@@ -97,7 +133,7 @@ impl From<rppal::spi::Error> for HatError {
 /// is a worse trade than a few extra writes.
 const TRANSFER_BUFFER_BYTES: usize = 4096;
 
-type Panel = Display<SpiInterface<'static, SimpleHalSpiDevice, OutputPin>, ST7735s, OutputPin>;
+pub type Panel = Display<SpiInterface<'static, SimpleHalSpiDevice, OutputPin>, ST7735s, OutputPin>;
 
 /// The HAT's screen, as a [`Renderer`].
 pub struct HatDisplay {
@@ -122,14 +158,19 @@ impl HatDisplay {
             Box::leak(vec![0u8; TRANSFER_BUFFER_BYTES].into_boxed_slice());
         let interface = SpiInterface::new(device, dc, buffer);
 
+        let rotation = rotation_from_env();
+        let (x_offset, y_offset) = offset_from_env(rotation);
         let mut delay = Delay::new();
         let panel = Builder::new(ST7735s, interface)
             .reset_pin(rst)
-            // The HAT's glass is mounted so that the controller's default
-            // orientation is upside down relative to the board's silkscreen.
-            .orientation(Orientation::new().rotate(Rotation::Deg180))
+            .orientation(Orientation::new().rotate(rotation))
             .invert_colors(ColorInversion::Normal)
             .display_size(panel::WIDTH as u16, panel::HEIGHT as u16)
+            // The ST7735S has 132x162 of RAM but only 128x128 is visible, so
+            // the window sits at an offset. Without it the panel shows a band
+            // of uninitialised controller RAM along one edge — which looks like
+            // noise, not like a configuration mistake.
+            .display_offset(x_offset, y_offset)
             .init(&mut delay)
             .map_err(|e| HatError::Init(format!("{e:?}")))?;
 
@@ -147,6 +188,18 @@ impl HatDisplay {
         } else {
             self.backlight.set_low();
         }
+    }
+
+    /// Draw anything onto the panel.
+    ///
+    /// Exists so calibration and diagnostics can use the same initialised
+    /// display without `panel` having to know about them.
+    pub fn with_target<F, E>(&mut self, draw: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut Panel) -> Result<(), E>,
+        E: std::fmt::Debug,
+    {
+        draw(&mut self.panel).map_err(|e| format!("{e:?}"))
     }
 
     /// Draw a view, reporting rather than swallowing a bus failure.

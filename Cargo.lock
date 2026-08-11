@@ -193,6 +193,7 @@ dependencies = [
 name = "pinex"
 version = "0.1.0"
 dependencies = [
+ "embedded-graphics",
  "pinex-device",
  "pinex-input",
  "pinex-proto",

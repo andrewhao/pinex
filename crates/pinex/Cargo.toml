@@ -15,7 +15,9 @@ pinex-device = { workspace = true, features = ["sim"] }
 pinex-input.workspace = true
 pinex-ui.workspace = true
 pinex-web.workspace = true
+embedded-graphics.workspace = true
 
 [dev-dependencies]
 pinex-web.workspace = true
+embedded-graphics.workspace = true
 pinex-device = { workspace = true, features = ["sim"] }
