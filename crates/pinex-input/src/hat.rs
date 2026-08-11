@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use rppal::gpio::{Gpio, InputPin};
 
+use crate::debounce::Debouncer;
 use crate::{InputEvent, InputSource};
 
 /// BCM pin numbers, from the vendor's demo code.
@@ -23,10 +24,6 @@ pub mod pins {
     pub const KEY2: u8 = 20;
     pub const KEY3: u8 = 16;
 }
-
-/// Ignore a level change within this of the last one. Mechanical switches
-/// bounce for a millisecond or two; a footswitch stamped on stage bounces more.
-const DEBOUNCE: Duration = Duration::from_millis(25);
 
 /// What each input does. Chosen so the two most common actions — step through
 /// presets — are the joystick's natural axis, and the destructive one (load a
@@ -44,9 +41,9 @@ const BINDINGS: [(&str, InputEvent); 8] = [
 
 pub struct HatButtons {
     pins: Vec<InputPin>,
-    /// Last observed state per input, so a held button reports once.
-    held: [bool; 8],
-    last_change: std::time::Instant,
+    /// Requires a level to hold steady before believing it. See
+    /// [`crate::debounce`] for why the naive version fired on noise.
+    debounce: Debouncer<8>,
 }
 
 impl HatButtons {
@@ -68,8 +65,7 @@ impl HatButtons {
         }
         Ok(Self {
             pins: opened,
-            held: [false; 8],
-            last_change: std::time::Instant::now(),
+            debounce: Debouncer::new(),
         })
     }
 
@@ -78,26 +74,15 @@ impl HatButtons {
         BINDINGS.into_iter()
     }
 
-    /// Edge-triggered: a newly pressed input, at most one per call. Holding a
-    /// button does not repeat, which matters when the action is "load a preset".
+    /// A newly pressed input, once the level has held steady. Holding a button
+    /// does not repeat, which matters when the action is "load a preset".
     fn newly_pressed(&mut self) -> Option<usize> {
-        let mut now = [false; 8];
-        for (slot, pin) in now.iter_mut().zip(self.pins.iter()) {
+        // Active-low: the HAT pulls a pin to ground when its switch closes.
+        let mut levels = [false; 8];
+        for (slot, pin) in levels.iter_mut().zip(self.pins.iter()) {
             *slot = pin.is_low();
         }
-        if now == self.held {
-            return None;
-        }
-        if self.last_change.elapsed() < DEBOUNCE {
-            return None;
-        }
-        let pressed = now
-            .iter()
-            .zip(self.held.iter())
-            .position(|(now, before)| *now && !*before);
-        self.held = now;
-        self.last_change = std::time::Instant::now();
-        pressed
+        self.debounce.sample(levels).into_iter().next()
     }
 }
 

@@ -13,6 +13,8 @@
 //!   only piece that needs the target board, and it is deliberately the *only*
 //!   piece, so everything else stays testable.
 
+pub mod debounce;
+
 #[cfg(feature = "hat")]
 pub mod hat;
 
