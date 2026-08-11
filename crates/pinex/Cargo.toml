@@ -21,3 +21,9 @@ embedded-graphics.workspace = true
 pinex-web.workspace = true
 embedded-graphics.workspace = true
 pinex-device = { workspace = true, features = ["sim"] }
+
+# Only buildable with the HAT backend; `cargo clippy --all-targets` would
+# otherwise try to compile it without the feature that provides the display.
+[[example]]
+name = "panel_calibrate"
+required-features = ["hat"]
