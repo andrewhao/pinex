@@ -9,6 +9,7 @@
 //! than a surprise.
 
 pub mod browser;
+pub mod panel;
 pub mod render;
 
 pub use browser::{Connection, InputEvent, PresetBrowser, View};

@@ -22,4 +22,5 @@ pinex-input = { path = "crates/pinex-input" }
 pinex-ui = { path = "crates/pinex-ui" }
 pinex-web = { path = "crates/pinex-web" }
 crc = "3"
+embedded-graphics = "0.8"
 nix = { version = "0.29", features = ["term", "fs", "poll"] }

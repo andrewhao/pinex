@@ -7,5 +7,6 @@ repository.workspace = true
 
 [dependencies]
 pinex-proto.workspace = true
+embedded-graphics.workspace = true
 pinex-device.workspace = true
 pinex-input.workspace = true

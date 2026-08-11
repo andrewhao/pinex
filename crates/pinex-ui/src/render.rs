@@ -89,6 +89,7 @@ mod tests {
             connection,
             cursor: 0,
             cursor_name: name,
+            cursor_color: None,
             active,
             active_name: name,
             pending: false,

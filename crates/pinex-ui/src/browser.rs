@@ -41,6 +41,9 @@ pub struct View<'a> {
     /// 0-based index the player is browsing.
     pub cursor: u8,
     pub cursor_name: Option<&'a str>,
+    /// The pedal's own colour for the browsed preset, so a panel can agree
+    /// with the pedal's ring rather than invent a palette.
+    pub cursor_color: Option<[u8; 3]>,
     /// 0-based index the pedal says it is playing, if known.
     pub active: Option<u8>,
     pub active_name: Option<&'a str>,
@@ -85,6 +88,7 @@ impl PresetBrowser {
             connection: &self.connection,
             cursor: self.cursor,
             cursor_name: self.name_of(self.cursor),
+            cursor_color: self.color_at(self.cursor),
             active: self.active,
             active_name: self.active.and_then(|i| self.name_of(i)),
             pending: self.pending.is_some(),
