@@ -13,7 +13,9 @@ pub mod hat;
 
 pub mod browser;
 pub mod panel;
+pub mod preview;
 pub mod render;
 
 pub use browser::{Connection, InputEvent, PresetBrowser, View};
+pub use preview::{PreviewPanel, PreviewRenderer};
 pub use render::{lines, ConsoleRenderer, Multi, RecordingRenderer, Renderer};
