@@ -11,7 +11,6 @@
 use std::path::PathBuf;
 
 use pinex::App;
-use pinex_device::Pedal;
 use pinex_input::StdinInput;
 use pinex_ui::ConsoleRenderer;
 
@@ -34,14 +33,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         Some(path) => PathBuf::from(path),
-        None => find_pedal().ok_or(
-            "no Tonex found. Plug it in, pass the tty path, or use --sim to run without one.",
-        )?,
+        // No pedal yet is not an error: wait for one.
+        None => find_pedal().unwrap_or_else(|| PathBuf::from("/dev/tonex")),
     };
 
-    eprintln!("opening {}", device.display());
-    let pedal = Pedal::open(&device)?;
-    let mut app = App::new(pedal, StdinInput::new(), ConsoleRenderer);
+    eprintln!("watching {}", device.display());
+    // Reconnecting rather than opening once: the pedal may be plugged in after
+    // the service starts, or unplugged mid-set. Neither should end the program —
+    // the display says NO PEDAL and the loop keeps going.
+    let mut app = App::reconnecting(device, StdinInput::new(), ConsoleRenderer);
 
     // The debug page is how a firmware change gets discovered, so it runs by
     // default. Port 0 or a bind failure must not stop the pedal working.

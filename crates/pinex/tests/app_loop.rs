@@ -164,6 +164,48 @@ fn quitting_stops_the_loop() {
     );
 }
 
+/// A missing pedal is not an error: the loop must keep running and say
+/// NO PEDAL. Under systemd, exiting here would become a crash loop.
+#[test]
+fn a_missing_pedal_keeps_the_loop_alive_showing_no_pedal() {
+    let mut app = App::reconnecting(
+        std::path::PathBuf::from("/nonexistent/tonex"),
+        ScriptedInput::new([]),
+        RecordingRenderer::default(),
+    );
+    app.start().unwrap();
+
+    let started = std::time::Instant::now();
+    app.settle(Duration::from_millis(600));
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(500),
+        "the loop must keep running rather than exit"
+    );
+    let screen = app.renderer().last().expect("must still render");
+    assert_eq!(screen[0], "NO PEDAL");
+    assert!(!app.browser().view().connection.is_connected());
+}
+
+/// A pedal that appears after start-up must be picked up without a restart.
+#[test]
+fn a_pedal_plugged_in_later_is_picked_up() {
+    let sim = PedalSim::start().unwrap();
+    let mut app = App::reconnecting(
+        sim.device_path().to_path_buf(),
+        ScriptedInput::new([]),
+        RecordingRenderer::default(),
+    );
+    app.start().unwrap();
+
+    assert!(
+        app.settle_until(BUDGET, |b| b.view().connection.is_connected()),
+        "should have connected on its own"
+    );
+    assert!(app.settle_until(BUDGET, |b| b.view().active.is_some()));
+    assert_eq!(app.browser().view().active, Some(1));
+}
+
 /// The display must never claim a preset is playing when the pedal is gone.
 #[test]
 fn losing_the_pedal_shows_no_pedal_and_drops_the_active_preset() {
