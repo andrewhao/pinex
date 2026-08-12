@@ -18,7 +18,7 @@
 
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7735s;
-use mipidsi::options::{ColorInversion, Orientation, Rotation};
+use mipidsi::options::{ColorInversion, ColorOrder, Orientation, Rotation};
 use mipidsi::{Builder, Display};
 use rppal::gpio::{Gpio, OutputPin};
 use rppal::hal::Delay;
@@ -42,6 +42,22 @@ pub mod pins {
     pub const KEY1: u8 = 21;
     pub const KEY2: u8 = 20;
     pub const KEY3: u8 = 16;
+}
+
+/// `PINEX_PANEL_COLOR_ORDER` = `rgb` | `bgr`.
+///
+/// This HAT's ST7735S wires its subpixels BGR, so a preset the pedal reports as
+/// pure red was drawn pure blue. Nothing upstream can detect that — the colour
+/// is correct all the way to the controller — so it is a property of the glass,
+/// like rotation and offset, and belongs in configuration beside them.
+///
+/// `panel_calibrate` draws R/G/B bars for exactly this reason. Run it before
+/// trusting a colour.
+fn color_order_from_env() -> ColorOrder {
+    match std::env::var("PINEX_PANEL_COLOR_ORDER").as_deref() {
+        Ok("rgb") | Ok("RGB") => ColorOrder::Rgb,
+        _ => ColorOrder::Bgr,
+    }
 }
 
 /// `PINEX_PANEL_ROTATION` = 0 | 90 | 180 | 270. Which way up the glass reads
@@ -164,6 +180,7 @@ impl HatDisplay {
         let panel = Builder::new(ST7735s, interface)
             .reset_pin(rst)
             .orientation(Orientation::new().rotate(rotation))
+            .color_order(color_order_from_env())
             .invert_colors(ColorInversion::Normal)
             .display_size(panel::WIDTH as u16, panel::HEIGHT as u16)
             // The ST7735S has 132x162 of RAM but only 128x128 is visible, so
