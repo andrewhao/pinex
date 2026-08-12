@@ -5,13 +5,37 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The Waveshare 1.44" HAT: ST7735S panel plus joystick and keys. Pi only.
+hat = ["pinex-ui/hat", "pinex-input/hat"]
+
 [dependencies]
 pinex-proto.workspace = true
 pinex-device = { workspace = true, features = ["sim"] }
 pinex-input.workspace = true
 pinex-ui.workspace = true
 pinex-web.workspace = true
+embedded-graphics.workspace = true
 
 [dev-dependencies]
 pinex-web.workspace = true
+embedded-graphics.workspace = true
 pinex-device = { workspace = true, features = ["sim"] }
+
+# Only buildable with the HAT backend; `cargo clippy --all-targets` would
+# otherwise try to compile it without the feature that provides the display.
+[[example]]
+name = "panel_calibrate"
+required-features = ["hat"]
+
+[[example]]
+name = "button_test"
+required-features = ["hat"]
+
+[[example]]
+name = "button_probe"
+required-features = ["hat"]
+
+[[example]]
+name = "probe_view"
+required-features = ["hat"]

@@ -29,6 +29,10 @@ const TICK: Duration = Duration::from_millis(50);
 /// How often to retry opening an absent pedal. Slow enough not to hammer USB.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Loop iterations per animation frame. At a 50 ms tick this is ~5 frames a
+/// second, which is a readable scroll rather than a blur.
+const STEPS_PER_ANIMATION_FRAME: u32 = 4;
+
 pub struct App<I: InputSource, R: Renderer> {
     /// `None` while no pedal is open. The loop keeps running and shows
     /// "NO PEDAL" rather than exiting — a controller that dies when the pedal
@@ -45,6 +49,8 @@ pub struct App<I: InputSource, R: Renderer> {
     last_state: Option<PedalState>,
     /// The last frame handed to the renderer, so identical ones are skipped.
     last_frame: Option<Vec<String>>,
+    /// Loop iterations, for pacing the animation clock.
+    steps: u32,
     /// Reported rather than swallowed, and surfaced on the display.
     pub errors: Vec<String>,
     /// Shared with the debug web page, when one is running.
@@ -62,9 +68,17 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             browser: PresetBrowser::new(),
             last_state: None,
             last_frame: None,
+            steps: 0,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
+    }
+
+    /// Choose the panel's look.
+    pub fn set_theme(&mut self, theme: pinex_ui::Theme) {
+        self.browser.set_theme(theme);
+        // Force a redraw: the frame summary does not mention the theme.
+        self.last_frame = None;
     }
 
     /// The snapshot the debug page renders. Hand this to `DebugServer::start`.
@@ -86,6 +100,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             browser: PresetBrowser::new(),
             last_state: None,
             last_frame: None,
+            steps: 0,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
@@ -161,16 +176,30 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             }
         }
 
-        // Render only when something actually changed. The loop ticks every
-        // 50 ms; rendering unconditionally meant ~20 identical lines a second
-        // into the journal, forever. A display that redraws an unchanged frame
-        // is also just wasted SPI traffic on the Pi.
+        // Advance the animation clock a few times a second rather than every
+        // 50 ms tick: one character per frame at 20 fps is far too fast to read.
+        self.steps = self.steps.wrapping_add(1);
+        let animation_frame = self.steps.is_multiple_of(STEPS_PER_ANIMATION_FRAME);
+        if animation_frame {
+            self.browser.tick();
+        }
+
+        // Render on change, or while something is scrolling. Redrawing an
+        // unchanged, static frame is wasted SPI traffic and, on the Pi, a log
+        // line every 50 ms forever.
         {
             let view = self.browser.view();
             let frame = pinex_ui::lines(&view);
-            if self.last_frame.as_ref() != Some(&frame) {
+            let changed = self.last_frame.as_ref() != Some(&frame);
+            // Scrolling redraws on the animation clock, not on every loop tick:
+            // the text only moves when the tick advances, so redrawing between
+            // frames repaints an identical picture.
+            if changed {
                 self.renderer.render(&view);
                 self.last_frame = Some(frame);
+            } else if animation_frame && view.animating() {
+                // Only the name band moves, so only redraw that.
+                self.renderer.render_scroll(&view);
             }
         }
         self.publish_snapshot();
@@ -309,7 +338,52 @@ impl<I: InputSource, R: Renderer> App<I, R> {
                     message::set_preset(current, n).map_err(|e| e.to_string())?;
                 pedal.send_frame(&frame).map_err(|e| e.to_string())
             }
+            Command::AssignSlot(slot, preset) => {
+                Self::edit(pedal, &self.last_state, "assign slot", move |state| {
+                    state.assign_slot(slot, preset)
+                })
+            }
+            Command::LoadSlot(slot, preset) => {
+                Self::edit(pedal, &self.last_state, "load slot", move |state| {
+                    state.load_slot(slot, preset)
+                })
+            }
+            Command::SwitchToSlot(slot) => {
+                Self::edit(pedal, &self.last_state, "switch slot", move |state| {
+                    state.switch_to_slot(slot)
+                })
+            }
+            Command::SetStompMode(on) => {
+                Self::edit(pedal, &self.last_state, "set mode", move |state| {
+                    state.set_stomp_mode(on).map(|off| vec![off])
+                })
+            }
+            Command::SetGain(db) => Self::edit(pedal, &self.last_state, "set gain", move |state| {
+                state.set_input_trim(db).map(|offsets| offsets.to_vec())
+            }),
         }
+    }
+
+    /// Apply a verified edit to the pedal's own state and transmit it.
+    ///
+    /// Every stage operation routes through `message::edit_state`, so none can
+    /// widen into a write that touches more than it meant to.
+    fn edit<F>(
+        pedal: &mut Pedal,
+        last_state: &Option<PedalState>,
+        what: &str,
+        edit: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(&mut PedalState) -> Result<Vec<usize>, pinex_proto::state::StateError>,
+    {
+        let Some(current) = last_state else {
+            return Err(format!(
+                "cannot {what}: no state received from the pedal yet"
+            ));
+        };
+        let (frame, _touched) = message::edit_state(current, edit).map_err(|e| e.to_string())?;
+        pedal.send_frame(&frame).map_err(|e| e.to_string())
     }
 
     /// Feed one input and run a step, for tests and scripted sessions.

@@ -5,5 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# GPIO buttons on the Pi HAT. Off by default: rppal is Linux-only.
+hat = ["dep:rppal"]
+
 [dependencies]
 pinex-proto.workspace = true
+rppal = { workspace = true, optional = true }

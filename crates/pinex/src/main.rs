@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use pinex::App;
 use pinex_input::StdinInput;
-use pinex_ui::ConsoleRenderer;
+use pinex_ui::{ConsoleRenderer, Multi};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arg = std::env::args().nth(1);
@@ -41,7 +41,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Reconnecting rather than opening once: the pedal may be plugged in after
     // the service starts, or unplugged mid-set. Neither should end the program —
     // the display says NO PEDAL and the loop keeps going.
-    let mut app = App::reconnecting(device, StdinInput::new(), ConsoleRenderer);
+    let mut app = App::reconnecting(device, input(), renderers());
+    // PINEX_THEME=marquee for the big-number look; see pinex_ui::theme.
+    let theme = pinex_ui::Theme::from_env();
+    eprintln!("theme: {}", theme.name());
+    app.set_theme(theme);
 
     // The debug page is how a firmware change gets discovered, so it runs by
     // default. Port 0 or a bind failure must not stop the pedal working.
@@ -63,6 +67,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 const USAGE: &str = "keys: n/Enter = next, p = prev, s = select, r = refresh, q = quit";
+
+/// The console renderer always runs: on the Pi it is the journal, and it is how
+/// a headless run gets diagnosed. The panel joins it when one is present.
+#[cfg(feature = "hat")]
+fn renderers() -> Multi {
+    let base = Multi::default().with(ConsoleRenderer::default());
+    match pinex_ui::hat::HatDisplay::open() {
+        Ok(panel) => {
+            eprintln!("HAT panel: ST7735S 128x128 on SPI0");
+            base.with(panel)
+        }
+        // A missing or broken panel must not stop the pedal working.
+        Err(e) => {
+            eprintln!("! no HAT panel: {e}");
+            base
+        }
+    }
+}
+
+#[cfg(not(feature = "hat"))]
+fn renderers() -> Multi {
+    Multi::default().with(ConsoleRenderer::default())
+}
+
+/// The HAT's buttons when built for it, the keyboard otherwise.
+///
+/// Not both: two sources would need multiplexing, and on the Pi the keyboard is
+/// /dev/null anyway.
+#[cfg(feature = "hat")]
+fn input() -> Box<dyn pinex_input::InputSource> {
+    match pinex_input::hat::HatButtons::open() {
+        Ok(buttons) => {
+            eprintln!("HAT buttons: joystick = browse, press/KEY1 = select, KEY2 = refresh");
+            Box::new(buttons)
+        }
+        Err(e) => {
+            eprintln!("! no HAT buttons ({e}), falling back to the keyboard");
+            Box::new(StdinInput::new())
+        }
+    }
+}
+
+#[cfg(not(feature = "hat"))]
+fn input() -> Box<dyn pinex_input::InputSource> {
+    Box::new(StdinInput::new())
+}
 
 /// Debug page port. `PINEX_WEB_PORT=0` picks a free one; unset uses 8080.
 fn web_port() -> u16 {

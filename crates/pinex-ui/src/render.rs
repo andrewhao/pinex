@@ -8,6 +8,14 @@ use crate::browser::View;
 
 pub trait Renderer {
     fn render(&mut self, view: &View<'_>);
+
+    /// Redraw only what moves between animation frames.
+    ///
+    /// Defaults to a full redraw, which is always correct; implementations that
+    /// pay for pixels — a real panel over SPI — override it.
+    fn render_scroll(&mut self, view: &View<'_>) {
+        self.render(view);
+    }
 }
 
 /// Formats a view as the lines a small display would show.
@@ -47,14 +55,55 @@ pub fn lines(view: &View<'_>) -> Vec<String> {
     out
 }
 
+/// Draws to several renderers at once.
+///
+/// The Pi runs a panel *and* logs to the journal; both should show the same
+/// thing, and neither should be special-cased in the app loop.
+#[derive(Default)]
+pub struct Multi(pub Vec<Box<dyn Renderer + Send>>);
+
+impl Multi {
+    pub fn with(mut self, renderer: impl Renderer + Send + 'static) -> Self {
+        self.0.push(Box::new(renderer));
+        self
+    }
+}
+
+impl Renderer for Multi {
+    fn render(&mut self, view: &View<'_>) {
+        for renderer in self.0.iter_mut() {
+            renderer.render(view);
+        }
+    }
+
+    fn render_scroll(&mut self, view: &View<'_>) {
+        for renderer in self.0.iter_mut() {
+            renderer.render_scroll(view);
+        }
+    }
+}
+
 /// Prints to stdout. Used when running on a laptop with no panel.
+///
+/// Dedupes internally: the app redraws whenever a name is scrolling, which is
+/// several times a second, and none of that belongs in a log.
 #[derive(Debug, Default)]
-pub struct ConsoleRenderer;
+pub struct ConsoleRenderer {
+    last: Option<Vec<String>>,
+}
 
 impl Renderer for ConsoleRenderer {
     fn render(&mut self, view: &View<'_>) {
-        println!("{}", lines(view).join("  |  "));
+        let current = lines(view);
+        if self.last.as_ref() == Some(&current) {
+            return;
+        }
+        println!("{}", current.join("  |  "));
+        self.last = Some(current);
     }
+
+    /// Nothing to say: a scroll does not change the text summary.
+    fn render_scroll(&mut self, _view: &View<'_>) {}
 }
 
 /// Keeps every frame it was given, so tests can assert what was displayed.
@@ -86,13 +135,10 @@ mod tests {
         name: Option<&'a str>,
     ) -> View<'a> {
         View {
-            connection,
-            cursor: 0,
             cursor_name: name,
             active,
             active_name: name,
-            pending: false,
-            last_error: None,
+            ..View::stub(connection)
         }
     }
 

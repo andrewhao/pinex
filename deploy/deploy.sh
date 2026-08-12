@@ -36,7 +36,10 @@ say "Pi is ${BITS}-bit -> $RUST_TARGET"
 say "building"
 rustup target add "$RUST_TARGET" >/dev/null 2>&1 || true
 if command -v cargo-zigbuild >/dev/null 2>&1; then
-  cargo zigbuild --release -p pinex --no-default-features --target "$RUST_TARGET"
+  # --no-default-features drops the PTY simulator; --features hat adds the
+  # ST7735S panel and the joystick/keys. A missing HAT is reported and skipped
+  # at runtime, so this binary is still correct on a bare Pi.
+  cargo zigbuild --release -p pinex --no-default-features --features hat --target "$RUST_TARGET"
 else
   echo "cargo-zigbuild not found. Install with:" >&2
   echo "  brew install zig && cargo install cargo-zigbuild" >&2

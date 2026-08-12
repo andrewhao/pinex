@@ -279,6 +279,31 @@ pub fn set_preset(current: &PedalState, preset: u8) -> Result<(Vec<u8>, Vec<usiz
     Ok((write_state(&next), intended))
 }
 
+/// Build a frame applying `edit` to the pedal's own state, verified first.
+///
+/// The same paranoia as [`set_preset`]: start from the pedal's bytes, apply the
+/// smallest possible change, and refuse to transmit if any byte outside the
+/// intended set moved. Every stage operation goes through here so none of them
+/// can quietly grow into a broader write.
+pub fn edit_state<F>(current: &PedalState, edit: F) -> Result<(Vec<u8>, Vec<usize>), MessageError>
+where
+    F: FnOnce(&mut PedalState) -> Result<Vec<usize>, crate::state::StateError>,
+{
+    let mut next = current.clone();
+    let intended = edit(&mut next).map_err(|_| MessageError::UnexpectedShape {
+        what: "state edit could not be applied to this state",
+    })?;
+
+    let actual = crate::state::diff_offsets(current.raw(), next.raw());
+    if let Some(&stray) = actual.iter().find(|off| !intended.contains(off)) {
+        return Err(MessageError::UnsafeWrite {
+            offset: stray,
+            intended: intended.clone(),
+        });
+    }
+    Ok((write_state(&next), intended))
+}
+
 /// A preset's index and display name, as reported by the pedal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresetInfo {

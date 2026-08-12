@@ -17,7 +17,43 @@
 
 use pinex_device::{Command, PedalEvent};
 pub use pinex_input::InputEvent;
-use pinex_proto::state::MAX_PRESETS;
+use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MAX_PRESETS, MIN_INPUT_TRIM_DB};
+
+/// Which page the panel is showing.
+///
+/// Three, deliberately. A stage device that needs a menu tree is a stage device
+/// nobody uses under pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    /// The two footswitch slots side by side: what is in A, what is in B.
+    #[default]
+    Slots,
+    /// Stomp mode, where the pedal exposes a third slot.
+    Stomp,
+    /// Global input trim.
+    Gain,
+}
+
+impl Screen {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Slots => Self::Stomp,
+            Self::Stomp => Self::Gain,
+            Self::Gain => Self::Slots,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Slots => "A/B",
+            Self::Stomp => "STOMP",
+            Self::Gain => "GAIN",
+        }
+    }
+}
+
+/// How far one nudge moves the gain.
+const GAIN_STEP_DB: f32 = 0.5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Connection {
@@ -41,6 +77,9 @@ pub struct View<'a> {
     /// 0-based index the player is browsing.
     pub cursor: u8,
     pub cursor_name: Option<&'a str>,
+    /// The pedal's own colour for the browsed preset, so a panel can agree
+    /// with the pedal's ring rather than invent a palette.
+    pub cursor_color: Option<[u8; 3]>,
     /// 0-based index the pedal says it is playing, if known.
     pub active: Option<u8>,
     pub active_name: Option<&'a str>,
@@ -48,6 +87,86 @@ pub struct View<'a> {
     pub pending: bool,
     /// Most recent parse failure, surfaced rather than swallowed.
     pub last_error: Option<&'a str>,
+    /// Which page is showing.
+    pub screen: Screen,
+    /// The slot being edited on the Slots page.
+    pub selected: Slot,
+    /// What each slot holds, once a state has arrived.
+    pub slot_presets: Option<[u8; 3]>,
+    /// The slot the pedal is playing.
+    pub active_slot: Option<Slot>,
+    /// True when the pedal is in stomp mode.
+    pub stomp_mode: bool,
+    /// Input trim in dB.
+    pub gain_db: f32,
+    /// Names of what each slot holds, indexed by slot.
+    pub slot_names: [Option<&'a str>; 3],
+    /// The pedal's colour for what each slot holds.
+    pub slot_colors: [Option<[u8; 3]>; 3],
+    /// Frame counter, driving any scrolling text.
+    pub tick: u32,
+    /// Which look the panel wears.
+    pub theme: crate::theme::Theme,
+}
+
+impl<'a> View<'a> {
+    /// The preset a slot holds, if a state has arrived.
+    pub fn slot_preset(&self, slot: Slot) -> Option<u8> {
+        self.slot_presets.map(|s| s[slot as usize])
+    }
+
+    pub fn slot_name_for(&self, slot: Slot) -> Option<&'a str> {
+        self.slot_names[slot as usize]
+    }
+
+    pub fn slot_color_for(&self, slot: Slot) -> Option<[u8; 3]> {
+        self.slot_colors[slot as usize]
+    }
+
+    /// Whether anything on screen is mid-scroll.
+    ///
+    /// The app redraws on change alone otherwise, so without this a scrolling
+    /// name would move once and then freeze.
+    pub fn animating(&self) -> bool {
+        const SLOT_COLS: usize = 11;
+        [Slot::A, Slot::B]
+            .into_iter()
+            .filter_map(|slot| {
+                if self.selected == slot {
+                    self.cursor_name
+                } else {
+                    self.slot_name_for(slot)
+                }
+            })
+            .any(|name| crate::skin::scrolls(crate::skin::short_name(name), SLOT_COLS))
+    }
+
+    /// A minimal view, for tests and previews.
+    ///
+    /// Everything a caller does not care about defaults to "not known yet",
+    /// which is also what the real view looks like before a state arrives.
+    pub fn stub(connection: &'a Connection) -> Self {
+        Self {
+            connection,
+            cursor: 0,
+            cursor_name: None,
+            cursor_color: None,
+            active: None,
+            active_name: None,
+            pending: false,
+            last_error: None,
+            screen: Screen::Slots,
+            selected: Slot::A,
+            slot_presets: None,
+            active_slot: None,
+            stomp_mode: false,
+            gain_db: 0.0,
+            slot_names: [None; 3],
+            slot_colors: [None; 3],
+            tick: 0,
+            theme: crate::theme::Theme::default(),
+        }
+    }
 }
 
 impl View<'_> {
@@ -70,6 +189,14 @@ pub struct PresetBrowser {
     active: Option<u8>,
     pending: Option<u8>,
     last_error: Option<String>,
+    screen: Screen,
+    selected: Slot,
+    slot_presets: Option<[u8; 3]>,
+    active_slot: Option<Slot>,
+    stomp_mode: bool,
+    gain_db: f32,
+    tick: u32,
+    theme: crate::theme::Theme,
 }
 
 impl PresetBrowser {
@@ -85,11 +212,55 @@ impl PresetBrowser {
             connection: &self.connection,
             cursor: self.cursor,
             cursor_name: self.name_of(self.cursor),
+            cursor_color: self.color_at(self.cursor),
             active: self.active,
             active_name: self.active.and_then(|i| self.name_of(i)),
             pending: self.pending.is_some(),
             last_error: self.last_error.as_deref(),
+            screen: self.screen,
+            selected: self.selected,
+            slot_presets: self.slot_presets,
+            active_slot: self.active_slot,
+            stomp_mode: self.stomp_mode,
+            gain_db: self.gain_db,
+            slot_names: [
+                self.slot_name(Slot::A),
+                self.slot_name(Slot::B),
+                self.slot_name(Slot::C),
+            ],
+            slot_colors: [
+                self.slot_color(Slot::A),
+                self.slot_color(Slot::B),
+                self.slot_color(Slot::C),
+            ],
+            tick: self.tick,
+            theme: self.theme,
         }
+    }
+
+    /// Choose the panel's look.
+    pub fn set_theme(&mut self, theme: crate::theme::Theme) {
+        self.theme = theme;
+    }
+
+    /// Advance the animation clock.
+    pub fn tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+
+    /// The preset a slot holds.
+    pub fn slot_preset(&self, slot: Slot) -> Option<u8> {
+        self.slot_presets.map(|s| s[slot as usize])
+    }
+
+    /// The name of whatever a slot holds.
+    pub fn slot_name(&self, slot: Slot) -> Option<&str> {
+        self.slot_preset(slot).and_then(|p| self.name_of(p))
+    }
+
+    /// The pedal's colour for whatever a slot holds.
+    pub fn slot_color(&self, slot: Slot) -> Option<[u8; 3]> {
+        self.slot_preset(slot).and_then(|p| self.color_at(p))
     }
 
     /// The pedal's own colour for `index`, once a state has arrived.
@@ -132,6 +303,23 @@ impl PresetBrowser {
                 if let Ok(colors) = state.preset_colors() {
                     self.colors = colors;
                 }
+                self.slot_presets = Some([
+                    state.slot_preset(Slot::A),
+                    state.slot_preset(Slot::B),
+                    state.slot_preset(Slot::C),
+                ]);
+                self.active_slot = state.active_slot().ok();
+                self.stomp_mode = state.stomp_mode().map(|m| m == 1).unwrap_or(false);
+                if let Ok(trim) = state.input_trim() {
+                    self.gain_db = trim;
+                }
+                // Follow the pedal into whichever mode it is actually in: a
+                // page showing A/B while the pedal is in stomp mode is a lie.
+                self.screen = match (self.screen, self.stomp_mode) {
+                    (Screen::Slots, true) => Screen::Stomp,
+                    (Screen::Stomp, false) => Screen::Slots,
+                    (other, _) => other,
+                };
                 match state.active_preset() {
                     Ok(active) => {
                         let first_sync = self.active.is_none();
@@ -169,27 +357,97 @@ impl PresetBrowser {
     }
 
     /// React to something the player did.
+    ///
+    /// What a direction means depends on the page, but the shape is constant:
+    /// **Next/Prev change a value, Select commits it.** Nothing commits by
+    /// scrolling past it, because on stage a value that applies as you pass
+    /// through it makes browsing dangerous.
     pub fn handle(&mut self, input: InputEvent) -> Vec<Command> {
         match input {
-            InputEvent::Next => {
-                self.cursor = (self.cursor + 1) % MAX_PRESETS;
-                Vec::new()
-            }
-            InputEvent::Prev => {
-                self.cursor = (self.cursor + MAX_PRESETS - 1) % MAX_PRESETS;
-                Vec::new()
-            }
-            InputEvent::Select => {
-                // Deliberately does NOT set `active`. See the module docs.
-                if !self.connection.is_connected() {
-                    return Vec::new();
-                }
-                self.pending = Some(self.cursor);
-                vec![Command::SetPreset(self.cursor)]
-            }
+            InputEvent::Next => self.nudge(1),
+            InputEvent::Prev => self.nudge(-1),
+            InputEvent::Select => self.commit(),
             InputEvent::Refresh => self.sync_all(),
+            InputEvent::Mode => self.toggle_mode(),
+            InputEvent::Page => {
+                self.screen = self.screen.next();
+                // Stomp and Slots are two views of the pedal's actual mode, so
+                // paging between them has to change the pedal, not just the
+                // display.
+                match (self.screen, self.stomp_mode) {
+                    (Screen::Stomp, false) => vec![Command::SetStompMode(true)],
+                    (Screen::Slots, true) => vec![Command::SetStompMode(false)],
+                    _ => Vec::new(),
+                }
+            }
             // Shutdown is the app loop's business, not the browser's.
             InputEvent::Quit => Vec::new(),
+        }
+    }
+
+    /// Move the value this page edits.
+    fn nudge(&mut self, delta: i16) -> Vec<Command> {
+        match self.screen {
+            Screen::Gain => {
+                let stepped = self.gain_db + delta as f32 * GAIN_STEP_DB;
+                self.gain_db = stepped.clamp(MIN_INPUT_TRIM_DB, MAX_INPUT_TRIM_DB);
+                // Gain is continuous and audible: applying as it moves is what
+                // a knob does, so this one is the exception to commit-on-select.
+                vec![Command::SetGain(self.gain_db)]
+            }
+            Screen::Slots | Screen::Stomp => {
+                let span = MAX_PRESETS as i16;
+                self.cursor = (((self.cursor as i16 + delta) % span + span) % span) as u8;
+                Vec::new()
+            }
+        }
+    }
+
+    /// Apply what the cursor is on.
+    fn commit(&mut self) -> Vec<Command> {
+        if !self.connection.is_connected() {
+            return Vec::new();
+        }
+        match self.screen {
+            Screen::Gain => Vec::new(),
+            Screen::Stomp => {
+                // Stomp mode plays slot C, so that is what gets loaded.
+                self.pending = Some(self.cursor);
+                vec![Command::LoadSlot(Slot::C, self.cursor)]
+            }
+            Screen::Slots => {
+                let target = self.selected;
+                // Assigning the slot you are *hearing* changes the sound now;
+                // assigning the other one is silent. Both are legitimate, so
+                // the display says which is which rather than forbidding one.
+                self.pending = Some(self.cursor);
+                if self.active_slot == Some(target) {
+                    vec![Command::AssignSlot(target, self.cursor)]
+                } else {
+                    // One write, not two: separate commands are each built from
+                    // the same stale snapshot, so the second undoes the first.
+                    vec![Command::LoadSlot(target, self.cursor)]
+                }
+            }
+        }
+    }
+
+    /// Swap which slot the Slots page is editing, or toggle the pedal's mode.
+    fn toggle_mode(&mut self) -> Vec<Command> {
+        match self.screen {
+            Screen::Slots => {
+                self.selected = match self.selected {
+                    Slot::A => Slot::B,
+                    _ => Slot::A,
+                };
+                // Show what that slot already holds, so the cursor starts from
+                // the current value rather than wherever it was left.
+                if let Some(preset) = self.slot_preset(self.selected) {
+                    self.cursor = preset.min(MAX_PRESETS - 1);
+                }
+                Vec::new()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -281,7 +539,15 @@ mod tests {
 
         let cmds = b.handle(InputEvent::Select);
 
-        assert_eq!(cmds, vec![Command::SetPreset(5)]);
+        // On the Slots page, Select targets the slot being edited. Which
+        // command it is matters less than what it must NOT do.
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [Command::AssignSlot(_, 5)] | [Command::LoadSlot(_, 5)]
+            ),
+            "should act on the cursor preset: {cmds:?}"
+        );
         assert_eq!(
             b.view().active,
             Some(3),

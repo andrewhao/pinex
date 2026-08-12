@@ -13,6 +13,11 @@
 //!   only piece that needs the target board, and it is deliberately the *only*
 //!   piece, so everything else stays testable.
 
+pub mod debounce;
+
+#[cfg(feature = "hat")]
+pub mod hat;
+
 use std::collections::VecDeque;
 use std::io::{BufRead, IsTerminal};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -29,6 +34,10 @@ pub enum InputEvent {
     Select,
     /// Re-sync everything from the pedal.
     Refresh,
+    /// Change page.
+    Page,
+    /// Switch which slot is being edited, or which mode the pedal is in.
+    Mode,
     /// Shut down cleanly.
     Quit,
 }
@@ -42,6 +51,8 @@ impl InputEvent {
             "p" | "k" => Some(Self::Prev),
             "s" | "enter" => Some(Self::Select),
             "r" => Some(Self::Refresh),
+            "t" => Some(Self::Page),
+            "m" | " " => Some(Self::Mode),
             "q" => Some(Self::Quit),
             _ => None,
         }
@@ -72,6 +83,12 @@ impl ScriptedInput {
 
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+}
+
+impl<T: InputSource + ?Sized> InputSource for Box<T> {
+    fn poll(&mut self, timeout: Duration) -> Option<InputEvent> {
+        (**self).poll(timeout)
     }
 }
 

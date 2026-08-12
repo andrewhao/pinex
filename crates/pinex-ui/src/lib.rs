@@ -8,8 +8,17 @@
 //! major version when this lands; a mismatch there is expected setup work rather
 //! than a surprise.
 
+#[cfg(feature = "hat")]
+pub mod hat;
+
 pub mod browser;
+pub mod panel;
+pub mod preview;
 pub mod render;
+pub mod skin;
+pub mod theme;
 
 pub use browser::{Connection, InputEvent, PresetBrowser, View};
-pub use render::{lines, ConsoleRenderer, RecordingRenderer, Renderer};
+pub use preview::{PreviewPanel, PreviewRenderer};
+pub use render::{lines, ConsoleRenderer, Multi, RecordingRenderer, Renderer};
+pub use theme::Theme;

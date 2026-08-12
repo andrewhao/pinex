@@ -53,6 +53,11 @@ pub mod offset_from_end {
     pub const SLOT_A_PRESET: usize = 18;
 }
 
+/// The input trim range the pedal accepts, from `protocol.md`'s annotation
+/// (`-15.0` .. `15.0`).
+pub const MIN_INPUT_TRIM_DB: f32 = -15.0;
+pub const MAX_INPUT_TRIM_DB: f32 = 15.0;
+
 /// The Tonex ONE stores 20 presets.
 pub const MAX_PRESETS: u8 = 20;
 
@@ -64,9 +69,11 @@ pub const MIN_STATE_LEN: usize = 23;
 ///
 /// Pinex presents a flat list of 20 presets and does not expose slots to the
 /// player — see [`Slot::other`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum Slot {
+    /// A is the default because A/B mode starts there.
+    #[default]
     A = 0,
     B = 1,
     C = 2,
@@ -199,6 +206,56 @@ impl PedalState {
         self.raw[self.index_from_end(offset_from_end::BYPASS_MODE)]
     }
 
+    /// Index of the `0xBA` colour array, the anchor for the fields around it.
+    ///
+    /// The three literals immediately before the array are, in order, stomp
+    /// mode, cab bypass and tuning mode. Anchoring to the array rather than to
+    /// the start of the body is what makes these readable on both firmware
+    /// generations: the array's *position* moves, but what sits beside it does
+    /// not.
+    fn color_array_index(&self) -> Result<usize, StateError> {
+        let mut index = 0usize;
+        while index < self.raw.len() {
+            if self.raw[index] == 0xBA {
+                let mut cursor = index;
+                if read_color_array(&self.raw, &mut cursor).is_some() {
+                    return Ok(index);
+                }
+            }
+            index += 1;
+        }
+        Err(StateError::NoColorArray)
+    }
+
+    /// `0x00` = A/B mode, `0x01` = stomp mode.
+    pub fn stomp_mode(&self) -> Result<u8, StateError> {
+        let anchor = self.color_array_index()?;
+        anchor
+            .checked_sub(3)
+            .map(|at| self.raw[at])
+            .ok_or(StateError::NoColorArray)
+    }
+
+    /// `0x00` = off, `0x01` = on.
+    pub fn cab_bypass(&self) -> Result<u8, StateError> {
+        let anchor = self.color_array_index()?;
+        anchor
+            .checked_sub(2)
+            .map(|at| self.raw[at])
+            .ok_or(StateError::NoColorArray)
+    }
+
+    /// Switch between A/B and stomp mode. Returns the offset written.
+    ///
+    /// The pedal exposes slot C only in stomp mode, so this is what makes the
+    /// third slot reachable at all.
+    pub fn set_stomp_mode(&mut self, on: bool) -> Result<usize, StateError> {
+        let anchor = self.color_array_index()?;
+        let at = anchor.checked_sub(3).ok_or(StateError::NoColorArray)?;
+        self.raw[at] = u8::from(on);
+        Ok(at)
+    }
+
     /// The per-preset RGB colours the pedal shows on its ring, one per preset.
     ///
     /// Found by *shape*, not by offset: the colour array is the `0xBA` list
@@ -225,6 +282,38 @@ impl PedalState {
             index += 1;
         }
         Err(StateError::NoColorArray)
+    }
+
+    /// Input trim in dB, the pedal's global gain.
+    ///
+    /// Lives immediately before the three mode flags, which sit before the
+    /// colour array — so it is found by the same anchor rather than a constant.
+    /// The value is the four bytes after an `0x88` f32 tag.
+    fn input_trim_index(&self) -> Result<usize, StateError> {
+        let anchor = self.color_array_index()?;
+        // stomp/cab/tuning are anchor-3..anchor-1; the f32's four value bytes
+        // end just before them, and the 0x88 tag precedes those.
+        anchor.checked_sub(7).ok_or(StateError::NoColorArray)
+    }
+
+    /// The pedal's input trim, in dB.
+    pub fn input_trim(&self) -> Result<f32, StateError> {
+        let at = self.input_trim_index()?;
+        let bytes: [u8; 4] = self.raw[at..at + 4]
+            .try_into()
+            .map_err(|_| StateError::NoColorArray)?;
+        Ok(f32::from_le_bytes(bytes))
+    }
+
+    /// Set the input trim, clamped to the range the pedal accepts.
+    ///
+    /// Returns the four offsets written. Clamping rather than erroring, because
+    /// a knob turned past its stop should stop, not fail.
+    pub fn set_input_trim(&mut self, db: f32) -> Result<[usize; 4], StateError> {
+        let at = self.input_trim_index()?;
+        let clamped = db.clamp(MIN_INPUT_TRIM_DB, MAX_INPUT_TRIM_DB);
+        self.raw[at..at + 4].copy_from_slice(&clamped.to_le_bytes());
+        Ok([at, at + 1, at + 2, at + 3])
     }
 
     /// A4 tuning reference in Hz (e.g. 440).
@@ -275,6 +364,53 @@ impl PedalState {
         let at = self.index_from_end(offset_from_end::DIRECT_MONITOR);
         self.raw[at] = 1;
         at
+    }
+
+    /// Put `preset` into `slot` without changing which slot is playing.
+    ///
+    /// This is what "choose which one is A and which is B" needs: assigning the
+    /// slot you are *not* hearing must not change the sound. Assigning the slot
+    /// you *are* hearing changes it immediately, which is the caller's business
+    /// to warn about, not ours to prevent.
+    ///
+    /// Returns the offsets written.
+    pub fn assign_slot(&mut self, slot: Slot, preset: u8) -> Result<Vec<usize>, StateError> {
+        let mut touched = vec![
+            self.set_slot_preset(slot, preset)?,
+            self.force_direct_monitoring(),
+        ];
+        touched.sort_unstable();
+        touched.dedup();
+        Ok(touched)
+    }
+
+    /// Put `preset` into `slot` and switch to it, in one edit.
+    ///
+    /// One operation rather than two on purpose. Each write is built from the
+    /// pedal's last reported state, so issuing "assign" and "switch" separately
+    /// means the second is built from a snapshot taken *before* the first
+    /// applied — and silently undoes it. Composing them keeps a single write
+    /// with a single diff assertion.
+    pub fn load_slot(&mut self, slot: Slot, preset: u8) -> Result<Vec<usize>, StateError> {
+        let mut touched = vec![
+            self.set_slot_preset(slot, preset)?,
+            self.set_active_slot(slot),
+            self.force_direct_monitoring(),
+        ];
+        touched.sort_unstable();
+        touched.dedup();
+        Ok(touched)
+    }
+
+    /// Switch to `slot` without changing what any slot holds.
+    ///
+    /// The A/B stomp: both sounds are already loaded, so this is the one that
+    /// has to be instant and silent.
+    pub fn switch_to_slot(&mut self, slot: Slot) -> Result<Vec<usize>, StateError> {
+        let mut touched = vec![self.set_active_slot(slot), self.force_direct_monitoring()];
+        touched.sort_unstable();
+        touched.dedup();
+        Ok(touched)
     }
 
     /// Change the playing preset, by whichever route this pedal actually honours.
