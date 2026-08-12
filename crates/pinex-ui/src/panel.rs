@@ -230,10 +230,18 @@ where
         skin::chicken_head(target, Point::new(x, 52), 13, fraction, face, playing)?;
 
         // Engraved legend: slot letter above, number below.
+        // On a light faceplate, DIM is grey on grey. Engraved legends are dark.
         Text::with_alignment(
             slot_letter(slot),
             Point::new(x, 34),
-            MonoTextStyle::new(&FONT_6X10, if playing { PLAYING } else { DIM }),
+            MonoTextStyle::new(
+                &FONT_6X10,
+                if playing {
+                    PLAYING
+                } else {
+                    Rgb565::new(2, 4, 2)
+                },
+            ),
             Alignment::Center,
         )
         .draw(target)?;

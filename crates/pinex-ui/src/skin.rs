@@ -274,31 +274,34 @@ where
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
         .draw(target)?;
 
-    // Body, shaded top-to-bottom. A knob is small enough that a bounding-box
-    // fill costs less than a line per row, so it is drawn as one region with
-    // the corners left in the seat colour.
-    let box_side = (radius * 2 + 1) as u32;
-    let bounds = Rectangle::new(
-        Point::new(center.x - radius, center.y - radius),
-        Size::new(box_side, box_side),
-    );
+    // Body, shaded top-to-bottom, drawn a span at a time.
+    //
+    // Not a bounding-box fill: that has to paint *something* in the corners
+    // outside the circle, and whatever colour is chosen is wrong somewhere. On
+    // a coloured enclosure black corners were invisible; on a brushed faceplate
+    // every knob sat in an obvious black square. A row of spans touches only
+    // the knob, and a knob is small enough that the extra draws do not matter —
+    // they happen on a change, not on every animation frame.
     let top_shade = lighten(base, 3, 5);
     let bottom_shade = darken(base, 2, 3);
-    target.fill_contiguous(
-        &bounds,
-        (0..box_side as i32).flat_map(move |row| {
-            let dy = row - radius;
-            let half = ((radius * radius - dy * dy).max(0) as f32).sqrt() as i32;
-            let shade = mix(top_shade, bottom_shade, row as u32, box_side);
-            (0..box_side as i32).map(move |col| {
-                if (col - radius).abs() <= half {
-                    shade
-                } else {
-                    Rgb565::BLACK
-                }
-            })
-        }),
-    )?;
+    for row in -radius..=radius {
+        let half = ((radius * radius - row * row).max(0) as f32).sqrt() as i32;
+        if half <= 0 {
+            continue;
+        }
+        let shade = mix(
+            top_shade,
+            bottom_shade,
+            (row + radius) as u32,
+            (radius * 2).max(1) as u32,
+        );
+        Line::new(
+            Point::new(center.x - half, center.y + row),
+            Point::new(center.x + half, center.y + row),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(shade, 1))
+        .draw(target)?;
+    }
 
     // Specular crescent, up and to the left.
     if radius >= 4 {
@@ -694,18 +697,41 @@ where
     } else {
         Rgb565::new(2, 4, 2)
     };
-    Circle::with_center(center, (radius * 2 + 3) as u32)
-        .into_styled(PrimitiveStyle::with_fill(darken(face, 3, 5)))
+    // Coloured skirt: a ring of the slot's own colour, wide enough to read.
+    Circle::with_center(center, (radius * 2 + 5) as u32)
+        .into_styled(PrimitiveStyle::with_fill(darken(face, 1, 3)))
         .draw(target)?;
-    knob(target, center, radius, 0, lit)?;
-    Circle::with_center(center, (radius * 2) as u32)
-        .into_styled(PrimitiveStyle::with_fill(body))
+    Circle::with_center(center, (radius * 2 + 5) as u32)
+        .into_styled(PrimitiveStyle::with_stroke(face, 1))
         .draw(target)?;
+
+    // Body, shaded, with a specular crescent up-left.
+    for row in -radius..=radius {
+        let half = ((radius * radius - row * row).max(0) as f32).sqrt() as i32;
+        if half <= 0 {
+            continue;
+        }
+        let shade = mix(
+            lighten(body, 2, 5),
+            darken(body, 1, 2),
+            (row + radius) as u32,
+            (radius * 2).max(1) as u32,
+        );
+        Line::new(
+            Point::new(center.x - half, center.y + row),
+            Point::new(center.x + half, center.y + row),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(shade, 1))
+        .draw(target)?;
+    }
+    // Specular highlight: a small filled blob up-left, not a ring. A stroked
+    // circle reads as something printed on the cap; a blob reads as light
+    // landing on it, which is the entire difference.
     Circle::with_center(
         Point::new(center.x - radius / 3, center.y - radius / 3),
-        radius as u32,
+        (radius / 2).max(2) as u32,
     )
-    .into_styled(PrimitiveStyle::with_stroke(lighten(body, 2, 5), 1))
+    .into_styled(PrimitiveStyle::with_fill(lighten(body, 3, 5)))
     .draw(target)?;
 
     // Pointer: 300 degrees of sweep starting at seven o'clock.
