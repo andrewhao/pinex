@@ -103,6 +103,8 @@ pub struct View<'a> {
     pub slot_names: [Option<&'a str>; 3],
     /// The pedal's colour for what each slot holds.
     pub slot_colors: [Option<[u8; 3]>; 3],
+    /// Frame counter, driving any scrolling text.
+    pub tick: u32,
 }
 
 impl<'a> View<'a> {
@@ -117,6 +119,24 @@ impl<'a> View<'a> {
 
     pub fn slot_color_for(&self, slot: Slot) -> Option<[u8; 3]> {
         self.slot_colors[slot as usize]
+    }
+
+    /// Whether anything on screen is mid-scroll.
+    ///
+    /// The app redraws on change alone otherwise, so without this a scrolling
+    /// name would move once and then freeze.
+    pub fn animating(&self) -> bool {
+        const SLOT_COLS: usize = 11;
+        [Slot::A, Slot::B]
+            .into_iter()
+            .filter_map(|slot| {
+                if self.selected == slot {
+                    self.cursor_name
+                } else {
+                    self.slot_name_for(slot)
+                }
+            })
+            .any(|name| crate::skin::scrolls(crate::skin::short_name(name), SLOT_COLS))
     }
 
     /// A minimal view, for tests and previews.
@@ -141,6 +161,7 @@ impl<'a> View<'a> {
             gain_db: 0.0,
             slot_names: [None; 3],
             slot_colors: [None; 3],
+            tick: 0,
         }
     }
 }
@@ -171,6 +192,7 @@ pub struct PresetBrowser {
     active_slot: Option<Slot>,
     stomp_mode: bool,
     gain_db: f32,
+    tick: u32,
 }
 
 impl PresetBrowser {
@@ -207,7 +229,13 @@ impl PresetBrowser {
                 self.slot_color(Slot::B),
                 self.slot_color(Slot::C),
             ],
+            tick: self.tick,
         }
+    }
+
+    /// Advance the animation clock.
+    pub fn tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
     }
 
     /// The preset a slot holds.

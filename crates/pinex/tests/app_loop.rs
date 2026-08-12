@@ -167,29 +167,31 @@ fn quitting_stops_the_loop() {
 /// The loop ticks 20 times a second. Rendering every tick filled the Pi's
 /// journal with identical lines, and would be wasted SPI traffic on a panel.
 #[test]
-fn an_unchanged_view_is_not_re_rendered() {
+fn an_idle_view_redraws_only_at_the_animation_rate() {
     let sim = PedalSim::start().unwrap();
     let pedal = Pedal::open(sim.device_path()).unwrap();
     let mut app = App::new(pedal, ScriptedInput::new([]), RecordingRenderer::default());
     app.start().unwrap();
     app.settle_until(BUDGET, |b| b.view().active_name.is_some());
 
-    // Let it idle: nothing changes, so nothing new should be drawn.
+    // Let it idle. Names on this rig are long enough to scroll, so some
+    // redrawing is expected and correct — but it must be paced by the animation
+    // clock (~5 a second), not by the 20 Hz loop tick. The bug this guards
+    // against filled the Pi's journal with identical lines many times a second.
     let before = app.renderer().frames.len();
     app.settle(Duration::from_millis(600));
-    let after = app.renderer().frames.len();
+    let drawn = app.renderer().frames.len() - before;
 
-    assert_eq!(
-        before,
-        after,
-        "an idle loop drew {} extra identical frames",
-        after - before
+    assert!(
+        drawn <= 6,
+        "an idle loop drew {drawn} frames in 600ms; the animation clock should cap it near 3"
     );
 
-    // ...but a real change must still draw.
+    // ...but a real change must still draw, immediately.
+    let before_input = app.renderer().frames.len();
     app.step_with(InputEvent::Next);
     assert!(
-        app.renderer().frames.len() > after,
+        app.renderer().frames.len() > before_input,
         "moving the cursor must redraw"
     );
 }

@@ -56,6 +56,9 @@ where
 /// How many characters of the small font fit across the whole panel.
 const FULL_COLS: usize = (WIDTH / 5) as usize;
 
+/// How many fit across one slot's column.
+const SLOT_COLS: usize = 11;
+
 /// Draw a full preset name across the bottom of the panel, wrapped.
 ///
 /// The boxes are only 59px wide, which is eleven characters — enough for a
@@ -174,7 +177,7 @@ where
         };
         let _ = preset;
 
-        let area = Rectangle::new(Point::new(x, 24), Size::new(59, 58));
+        let area = Rectangle::new(Point::new(x, 24), Size::new(59, 76));
         match name {
             Some(name) => skin::draw(target, area, &Pedal::new(name, color, playing))?,
             None => RoundedRectangle::new(area, CornerRadii::new(Size::new(3, 3)))
@@ -183,7 +186,7 @@ where
         }
 
         if editing {
-            Rectangle::new(Point::new(x, 84), Size::new(59, 2))
+            Rectangle::new(Point::new(x, 102), Size::new(59, 2))
                 .into_styled(PrimitiveStyle::with_fill(WARN))
                 .draw(target)?;
         }
@@ -199,27 +202,18 @@ where
         .draw(target)?;
     }
 
-    // Both full names, stacked. Each is prefixed with its slot letter and the
-    // preset number it refers to, so a two-line name cannot be mistaken for
-    // two one-line names belonging to different slots.
+    // Each slot's full name scrolls in its own column, under its own box, so
+    // the two can be compared without either being cut and without the
+    // artwork having to shrink to make room.
     for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
+        let x = 3 + index as i32 * 63;
         let editing = view.selected == slot;
-        let (preset, name) = if editing {
-            (Some(view.cursor), view.cursor_name)
+        let name = if editing {
+            view.cursor_name
         } else {
-            (view.slot_preset(slot), view.slot_name_for(slot))
+            view.slot_name_for(slot)
         };
-
-        let text = match (preset, name) {
-            (Some(preset), Some(name)) => format!(
-                "{} {:02} {}",
-                slot_letter(slot),
-                preset + 1,
-                skin::short_name(name)
-            ),
-            (Some(preset), None) => format!("{} {:02}", slot_letter(slot), preset + 1),
-            _ => format!("{} --", slot_letter(slot)),
-        };
+        let Some(name) = name else { continue };
 
         let color = if view.active_slot == Some(slot) {
             PLAYING
@@ -228,7 +222,18 @@ where
         } else {
             TEXT
         };
-        draw_wrapped(target, Some(&text), 92 + index as i32 * 18, 2, color)?;
+
+        // Both columns scroll on the same clock, so they move together rather
+        // than shimmering against each other.
+        let text = skin::short_name(name);
+        let window = skin::marquee(text, SLOT_COLS, view.tick);
+        Text::with_alignment(
+            &window,
+            Point::new(x + 29, 114),
+            MonoTextStyle::new(&FONT_5X8, color),
+            Alignment::Center,
+        )
+        .draw(target)?;
     }
     Ok(())
 }

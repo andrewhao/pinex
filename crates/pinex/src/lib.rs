@@ -29,6 +29,10 @@ const TICK: Duration = Duration::from_millis(50);
 /// How often to retry opening an absent pedal. Slow enough not to hammer USB.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Loop iterations per animation frame. At a 50 ms tick this is ~5 frames a
+/// second, which is a readable scroll rather than a blur.
+const STEPS_PER_ANIMATION_FRAME: u32 = 4;
+
 pub struct App<I: InputSource, R: Renderer> {
     /// `None` while no pedal is open. The loop keeps running and shows
     /// "NO PEDAL" rather than exiting — a controller that dies when the pedal
@@ -45,6 +49,8 @@ pub struct App<I: InputSource, R: Renderer> {
     last_state: Option<PedalState>,
     /// The last frame handed to the renderer, so identical ones are skipped.
     last_frame: Option<Vec<String>>,
+    /// Loop iterations, for pacing the animation clock.
+    steps: u32,
     /// Reported rather than swallowed, and surfaced on the display.
     pub errors: Vec<String>,
     /// Shared with the debug web page, when one is running.
@@ -62,6 +68,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             browser: PresetBrowser::new(),
             last_state: None,
             last_frame: None,
+            steps: 0,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
@@ -86,6 +93,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             browser: PresetBrowser::new(),
             last_state: None,
             last_frame: None,
+            steps: 0,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
         }
@@ -161,14 +169,25 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             }
         }
 
-        // Render only when something actually changed. The loop ticks every
-        // 50 ms; rendering unconditionally meant ~20 identical lines a second
-        // into the journal, forever. A display that redraws an unchanged frame
-        // is also just wasted SPI traffic on the Pi.
+        // Advance the animation clock a few times a second rather than every
+        // 50 ms tick: one character per frame at 20 fps is far too fast to read.
+        self.steps = self.steps.wrapping_add(1);
+        let animation_frame = self.steps.is_multiple_of(STEPS_PER_ANIMATION_FRAME);
+        if animation_frame {
+            self.browser.tick();
+        }
+
+        // Render on change, or while something is scrolling. Redrawing an
+        // unchanged, static frame is wasted SPI traffic and, on the Pi, a log
+        // line every 50 ms forever.
         {
             let view = self.browser.view();
             let frame = pinex_ui::lines(&view);
-            if self.last_frame.as_ref() != Some(&frame) {
+            let changed = self.last_frame.as_ref() != Some(&frame);
+            // Scrolling redraws on the animation clock, not on every loop tick:
+            // the text only moves when the tick advances, so redrawing between
+            // frames repaints an identical picture.
+            if changed || (animation_frame && view.animating()) {
                 self.renderer.render(&view);
                 self.last_frame = Some(frame);
             }

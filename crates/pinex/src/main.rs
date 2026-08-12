@@ -68,7 +68,7 @@ const USAGE: &str = "keys: n/Enter = next, p = prev, s = select, r = refresh, q 
 /// a headless run gets diagnosed. The panel joins it when one is present.
 #[cfg(feature = "hat")]
 fn renderers() -> Multi {
-    let base = Multi::default().with(ConsoleRenderer);
+    let base = Multi::default().with(ConsoleRenderer::default());
     match pinex_ui::hat::HatDisplay::open() {
         Ok(panel) => {
             eprintln!("HAT panel: ST7735S 128x128 on SPI0");
@@ -84,7 +84,7 @@ fn renderers() -> Multi {
 
 #[cfg(not(feature = "hat"))]
 fn renderers() -> Multi {
-    Multi::default().with(ConsoleRenderer)
+    Multi::default().with(ConsoleRenderer::default())
 }
 
 /// The HAT's buttons when built for it, the keyboard otherwise.

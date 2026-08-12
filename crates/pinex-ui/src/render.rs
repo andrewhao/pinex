@@ -70,12 +70,22 @@ impl Renderer for Multi {
 }
 
 /// Prints to stdout. Used when running on a laptop with no panel.
+///
+/// Dedupes internally: the app redraws whenever a name is scrolling, which is
+/// several times a second, and none of that belongs in a log.
 #[derive(Debug, Default)]
-pub struct ConsoleRenderer;
+pub struct ConsoleRenderer {
+    last: Option<Vec<String>>,
+}
 
 impl Renderer for ConsoleRenderer {
     fn render(&mut self, view: &View<'_>) {
-        println!("{}", lines(view).join("  |  "));
+        let current = lines(view);
+        if self.last.as_ref() == Some(&current) {
+            return;
+        }
+        println!("{}", current.join("  |  "));
+        self.last = Some(current);
     }
 }
 

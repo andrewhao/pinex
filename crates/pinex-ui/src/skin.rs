@@ -168,6 +168,51 @@ pub fn badge_name(name: &str) -> &str {
     }
 }
 
+/// The window of `text` visible at `tick`, scrolling back and forth.
+///
+/// Text that fits is returned whole and never moves — motion on a stage display
+/// is a cost, and paying it for a name that already fits is pure distraction.
+///
+/// Longer text ping-pongs rather than wrapping around: a name that scrolls off
+/// one edge and reappears at the other reads as two different names at a
+/// glance. Back-and-forth keeps the word order intelligible, and it pauses at
+/// each end so the beginning and the end can both actually be read.
+///
+/// `tick` is a frame counter; the caller decides how fast frames come.
+pub fn marquee(text: &str, cols: usize, tick: u32) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= cols || cols == 0 {
+        return text.to_string();
+    }
+
+    let travel = chars.len() - cols;
+    // Frames spent holding still at each end.
+    const PAUSE: u32 = 8;
+    let leg = travel as u32 + PAUSE;
+    let cycle = leg * 2;
+    let phase = tick % cycle;
+
+    let offset = if phase < PAUSE {
+        0
+    } else if phase < leg {
+        (phase - PAUSE).min(travel as u32)
+    } else if phase < leg + PAUSE {
+        travel as u32
+    } else {
+        travel as u32 - (phase - leg - PAUSE).min(travel as u32)
+    };
+
+    chars[offset as usize..(offset as usize + cols).min(chars.len())]
+        .iter()
+        .collect()
+}
+
+/// Whether `text` would scroll at `cols`, so a caller can decide to keep
+/// redrawing.
+pub fn scrolls(text: &str, cols: usize) -> bool {
+    text.chars().count() > cols && cols > 0
+}
+
 /// Dim a colour towards black, for the slot that is not playing.
 pub fn dim(color: Rgb565, numerator: u8, denominator: u8) -> Rgb565 {
     let scale = |v: u8| ((v as u16 * numerator as u16) / denominator as u16) as u8;
@@ -493,6 +538,63 @@ mod tests {
         assert_eq!(short_name("JHS MORNING GLORY"), "MORNING GLORY");
         // The pedal's own spelling is kept, typo and all.
         assert!(short_name("TF MORNIING GLORY - BRIGHT 1").contains("MORNIING"));
+    }
+
+    #[test]
+    fn text_that_fits_never_moves() {
+        for tick in 0..50 {
+            assert_eq!(marquee("SHORT", 10, tick), "SHORT");
+        }
+        assert!(!scrolls("SHORT", 10));
+    }
+
+    #[test]
+    fn long_text_starts_at_the_beginning_and_reaches_the_end() {
+        let text = "MORNING GLORY - BRIGHT CUT 2";
+        let cols = 11;
+        assert!(scrolls(text, cols));
+
+        // It opens on the start, held for a beat.
+        assert_eq!(marquee(text, cols, 0), "MORNING GLO");
+        assert_eq!(marquee(text, cols, 3), "MORNING GLO");
+
+        // Somewhere in the cycle the tail is visible.
+        let seen: Vec<String> = (0..200).map(|t| marquee(text, cols, t)).collect();
+        assert!(
+            seen.iter().any(|w| w.ends_with("CUT 2")),
+            "the end of the name is never shown"
+        );
+        assert!(
+            seen.iter().any(|w| w.starts_with("MORNING")),
+            "the start of the name is never shown"
+        );
+    }
+
+    /// Ping-pong, not wrap-around: the window must always be a contiguous run
+    /// of the original, or the name reads as a different one mid-scroll.
+    #[test]
+    fn the_window_is_always_a_real_substring() {
+        let text = "PROTEIN - GREEN 3";
+        for tick in 0..300 {
+            let window = marquee(text, 8, tick);
+            assert!(
+                text.contains(&window),
+                "tick {tick} produced {window:?}, which is not part of the name"
+            );
+            assert_eq!(window.chars().count(), 8);
+        }
+    }
+
+    /// It must come back, or a name scrolled away is gone for good.
+    #[test]
+    fn scrolling_returns_to_the_start() {
+        let text = "A VERY LONG PRESET NAME INDEED";
+        let first = marquee(text, 10, 0);
+        let later: Vec<String> = (1..400).map(|t| marquee(text, 10, t)).collect();
+        assert!(
+            later.contains(&first),
+            "the scroll never returns to the beginning"
+        );
     }
 
     #[test]
