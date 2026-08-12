@@ -8,6 +8,12 @@ ExecStart=%h/bin/pinex /dev/ttyACM0
 Restart=always
 RestartSec=2
 Environment=PINEX_WEB_PORT=8080
+# Stated even though it is the default. `systemctl --user set-environment`
+# puts a variable in the *manager's* environment, where it is inherited by
+# every restart and appears in no file — the service ran the amp theme for a
+# day while this unit and the repo both said pedalboard. An explicit value
+# here wins over that inherited one, so what is deployed is what is written.
+Environment=PINEX_THEME=pedalboard
 # stdin is /dev/null here. The app treats that as "no keyboard" and keeps
 # running rather than quitting — see pinex_input::EndOfInput.
 
