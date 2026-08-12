@@ -213,6 +213,117 @@ pub fn scrolls(text: &str, cols: usize) -> bool {
     text.chars().count() > cols && cols > 0
 }
 
+/// Blend two colours, `num`/`den` of the way from `a` to `b`.
+fn mix(a: Rgb565, b: Rgb565, num: u32, den: u32) -> Rgb565 {
+    let lerp = |x: u8, y: u8| ((x as u32 * (den - num) + y as u32 * num) / den) as u8;
+    Rgb565::new(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+/// Toward white, for lit edges and highlights.
+fn lighten(c: Rgb565, num: u32, den: u32) -> Rgb565 {
+    mix(c, Rgb565::WHITE, num, den)
+}
+
+/// Toward black, for shaded edges and shadows.
+fn darken(c: Rgb565, num: u32, den: u32) -> Rgb565 {
+    mix(c, Rgb565::BLACK, num, den)
+}
+
+/// Fill `area` with a top-to-bottom gradient, one horizontal line per row.
+///
+/// A flat fill reads as a coloured rectangle; a gradient reads as a moulded
+/// object catching light from above, which is the whole difference between a
+/// diagram of a pedal and something that looks like it has a lid.
+fn gradient<D>(target: &mut D, area: Rectangle, top: Rgb565, bottom: Rgb565) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    // One `fill_contiguous` rather than a line per row. A row-at-a-time
+    // gradient is a separate SPI window-set and write for every row, and on the
+    // Pi that cost 36% of a core to redraw two boxes five times a second. This
+    // streams the whole region through a single window.
+    let height = area.size.height.max(1);
+    let width = area.size.width.max(1);
+    target.fill_contiguous(
+        &area,
+        (0..height).flat_map(move |row| {
+            let color = mix(top, bottom, row, height);
+            core::iter::repeat_n(color, width as usize)
+        }),
+    )
+}
+
+/// A knob that looks turned rather than printed.
+///
+/// Body gradient for the moulding, a bright crescent up-left where the light
+/// would land, a dark rim below it, and a pointer. At this size the highlight
+/// is what sells it — without it the knob is just a dark disc.
+fn knob<D>(target: &mut D, center: Point, radius: i32, tilt: i32, lit: bool) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let base = if lit {
+        Rgb565::new(6, 12, 6)
+    } else {
+        Rgb565::new(3, 6, 3)
+    };
+    let diameter = (radius * 2) as u32;
+
+    // Seat: a dark ring the knob sits in, so it reads as raised.
+    Circle::with_center(center, diameter + 2)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(target)?;
+
+    // Body, shaded top-to-bottom. A knob is small enough that a bounding-box
+    // fill costs less than a line per row, so it is drawn as one region with
+    // the corners left in the seat colour.
+    let box_side = (radius * 2 + 1) as u32;
+    let bounds = Rectangle::new(
+        Point::new(center.x - radius, center.y - radius),
+        Size::new(box_side, box_side),
+    );
+    let top_shade = lighten(base, 3, 5);
+    let bottom_shade = darken(base, 2, 3);
+    target.fill_contiguous(
+        &bounds,
+        (0..box_side as i32).flat_map(move |row| {
+            let dy = row - radius;
+            let half = ((radius * radius - dy * dy).max(0) as f32).sqrt() as i32;
+            let shade = mix(top_shade, bottom_shade, row as u32, box_side);
+            (0..box_side as i32).map(move |col| {
+                if (col - radius).abs() <= half {
+                    shade
+                } else {
+                    Rgb565::BLACK
+                }
+            })
+        }),
+    )?;
+
+    // Specular crescent, up and to the left.
+    if radius >= 4 {
+        Circle::with_center(
+            Point::new(center.x - radius / 3, center.y - radius / 3),
+            (radius as u32).max(2),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(lighten(base, 4, 5), 1))
+        .draw(target)?;
+    }
+
+    // Pointer.
+    Line::new(center, Point::new(center.x + tilt, center.y - radius + 1))
+        .into_styled(PrimitiveStyle::with_stroke(
+            if lit {
+                Rgb565::WHITE
+            } else {
+                Rgb565::CSS_DIM_GRAY
+            },
+            1,
+        ))
+        .draw(target)?;
+    Ok(())
+}
+
 /// Dim a colour towards black, for the slot that is not playing.
 pub fn dim(color: Rgb565, numerator: u8, denominator: u8) -> Rgb565 {
     let scale = |v: u8| ((v as u16 * numerator as u16) / denominator as u16) as u8;
@@ -246,69 +357,140 @@ impl<'a> Pedal<'a> {
 }
 
 /// Draw a stompbox (or amp head) filling `area`.
+///
+/// Built up the way a real object catches light: a shadow beneath it, a body
+/// graded from lit top to shaded bottom, a gloss over the upper half, a bright
+/// bevel on the top edge and a dark one on the bottom. None of it is a texture
+/// or a bitmap — it is all primitives, so it costs nothing to ship and scales
+/// with whatever colour the pedal reports.
 pub fn draw<D>(target: &mut D, area: Rectangle, pedal: &Pedal<'_>) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let body = if pedal.lit {
+    let base = if pedal.lit {
         pedal.color
     } else {
         // Unplayed boxes recede rather than disappear: still identifiable, but
         // never mistaken for the one making sound.
-        dim(pedal.color, 1, 4)
+        dim(pedal.color, 1, 3)
     };
-    let ink = if pedal.lit {
-        Rgb565::BLACK
-    } else {
-        Rgb565::CSS_DIM_GRAY
-    };
-    let trim = if pedal.lit {
-        Rgb565::WHITE
-    } else {
-        dim(Rgb565::WHITE, 1, 3)
-    };
+    let corners = CornerRadii::new(Size::new(4, 4));
 
+    // Cast shadow, down and right. Two pixels is enough to lift the box off the
+    // background at this size; more reads as a mistake.
+    let shadow = Rectangle::new(
+        Point::new(area.top_left.x + 2, area.top_left.y + 2),
+        area.size,
+    );
+    RoundedRectangle::new(shadow, corners)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(1, 2, 1)))
+        .draw(target)?;
+
+    // Body: lighter at the top, darker at the foot.
+    RoundedRectangle::new(area, corners)
+        .into_styled(PrimitiveStyle::with_fill(base))
+        .draw(target)?;
+    let inner = Rectangle::new(
+        Point::new(area.top_left.x + 1, area.top_left.y + 1),
+        Size::new(area.size.width - 2, area.size.height - 2),
+    );
+    gradient(target, inner, lighten(base, 2, 5), darken(base, 2, 5))?;
+
+    // Gloss across the upper third, fading out — the iOS lozenge highlight.
+    let gloss_height = (area.size.height / 3).max(3);
+    let gloss = Rectangle::new(
+        Point::new(area.top_left.x + 2, area.top_left.y + 1),
+        Size::new(area.size.width - 4, gloss_height),
+    );
+    gradient(target, gloss, lighten(base, 3, 5), lighten(base, 1, 6))?;
+
+    // Bevel: light along the top edge, dark along the bottom.
+    let top_edge = Point::new(area.top_left.x + 3, area.top_left.y);
+    Line::new(
+        top_edge,
+        Point::new(
+            area.top_left.x + area.size.width as i32 - 4,
+            area.top_left.y,
+        ),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(lighten(base, 4, 5), 1))
+    .draw(target)?;
+    let foot = area.top_left.y + area.size.height as i32 - 1;
+    Line::new(
+        Point::new(area.top_left.x + 3, foot),
+        Point::new(area.top_left.x + area.size.width as i32 - 4, foot),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(darken(base, 3, 5), 1))
+    .draw(target)?;
+
+    // Corner screws, if the box is big enough for them to read as screws
+    // rather than as dirt.
+    if area.size.width >= 40 {
+        for (dx, dy) in [(4, 4), (-5, 4), (4, -5), (-5, -5)] {
+            let cx = if dx > 0 {
+                area.top_left.x + dx
+            } else {
+                area.top_left.x + area.size.width as i32 + dx
+            };
+            let cy = if dy > 0 {
+                area.top_left.y + dy
+            } else {
+                area.top_left.y + area.size.height as i32 + dy
+            };
+            Circle::with_center(Point::new(cx, cy), 3)
+                .into_styled(PrimitiveStyle::with_fill(darken(base, 3, 5)))
+                .draw(target)?;
+            Line::new(Point::new(cx - 1, cy), Point::new(cx + 1, cy))
+                .into_styled(PrimitiveStyle::with_stroke(lighten(base, 3, 5), 1))
+                .draw(target)?;
+        }
+    }
+
+    if pedal.archetype == Archetype::Amp {
+        draw_amp_face(target, area, base, pedal.lit)?;
+    } else {
+        draw_stomp_face(target, area, pedal, base)?;
+    }
+
+    // Name plate: a recessed dark strip, bevelled the opposite way to the body
+    // so it reads as engraved rather than raised.
     let w = area.size.width as i32;
     let h = area.size.height as i32;
     let x = area.top_left.x;
     let y = area.top_left.y;
 
-    // Enclosure.
-    RoundedRectangle::new(area, CornerRadii::new(Size::new(3, 3)))
-        .into_styled(PrimitiveStyle::with_fill(body))
-        .draw(target)?;
-    RoundedRectangle::new(area, CornerRadii::new(Size::new(3, 3)))
-        .into_styled(PrimitiveStyle::with_stroke(trim, 1))
-        .draw(target)?;
-
-    if pedal.archetype == Archetype::Amp {
-        draw_amp_face(target, area, ink, trim)?;
-    } else {
-        draw_stomp_face(target, area, pedal, ink, trim)?;
-    }
-
-    // Name band across the middle, on a dark strip so it reads over any colour.
-    let cols_for_band = (((w - 6) / 5).max(1)) as usize;
-    let band_lines = wrap(short_name(pedal.name), cols_for_band)
+    let cols_for_band = (((w - 8) / 5).max(1)) as usize;
+    let band_lines = wrap(badge_name(pedal.name), cols_for_band)
         .len()
         .clamp(1, 2) as u32;
-    let band_y = y + h / 2 - 4;
-    Rectangle::new(
-        Point::new(x + 2, band_y),
-        Size::new(w as u32 - 4, 1 + band_lines * 8),
+    let band_y = y + h / 2 - 5;
+    let plate = Rectangle::new(
+        Point::new(x + 3, band_y),
+        Size::new(w as u32 - 6, 2 + band_lines * 8),
+    );
+    plate
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(2, 4, 2)))
+        .draw(target)?;
+    Line::new(Point::new(x + 3, band_y), Point::new(x + w - 4, band_y))
+        .into_styled(PrimitiveStyle::with_stroke(darken(base, 4, 5), 1))
+        .draw(target)?;
+    Line::new(
+        Point::new(x + 3, band_y + plate.size.height as i32 - 1),
+        Point::new(x + w - 4, band_y + plate.size.height as i32 - 1),
     )
-    .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+    .into_styled(PrimitiveStyle::with_stroke(lighten(base, 2, 5), 1))
     .draw(target)?;
 
-    // Wrap rather than truncate: "MORNIING GLORY" cut to "MORNIIN" is not a
-    // name a player recognises at a glance.
     let label = badge_name(pedal.name);
-    let cols = ((w - 6) / 5).max(1) as usize;
-    let text_color = if pedal.lit { Rgb565::WHITE } else { trim };
-    for (line, chunk) in wrap(label, cols).iter().take(2).enumerate() {
+    let text_color = if pedal.lit {
+        Rgb565::WHITE
+    } else {
+        Rgb565::CSS_DIM_GRAY
+    };
+    for (line, chunk) in wrap(label, cols_for_band).iter().take(2).enumerate() {
         Text::with_alignment(
             chunk,
-            Point::new(x + w / 2, band_y + 7 + line as i32 * 8),
+            Point::new(x + w / 2, band_y + 8 + line as i32 * 8),
             MonoTextStyle::new(&FONT_5X8, text_color),
             Alignment::Center,
         )
@@ -318,13 +500,12 @@ where
     Ok(())
 }
 
-/// Knobs along the top, footswitch and LED at the bottom.
+/// Knobs along the top, a chrome footswitch and a glowing LED at the foot.
 fn draw_stomp_face<D>(
     target: &mut D,
     area: Rectangle,
     pedal: &Pedal<'_>,
-    ink: Rgb565,
-    trim: Rgb565,
+    base: Rgb565,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -334,53 +515,80 @@ where
     let x = area.top_left.x;
     let y = area.top_left.y;
 
-    // Knobs, evenly spaced across the upper third.
+    // Knobs across the upper third, each pointing slightly differently so the
+    // row reads as a set of controls rather than a repeated stamp.
     let count = pedal.archetype.knobs() as i32;
-    let knob_r = if w >= 50 { 5 } else { 4 };
-    let knob_y = y + 9;
+    let radius = if w >= 50 { 5 } else { 4 };
+    let knob_y = y + 12;
     for index in 0..count {
         let cx = x + (w * (index + 1)) / (count + 1);
-        Circle::with_center(Point::new(cx, knob_y), (knob_r * 2) as u32)
-            .into_styled(PrimitiveStyle::with_fill(ink))
-            .draw(target)?;
-        // Pointer, each knob at a slightly different angle so the row does not
-        // read as a repeated stamp.
-        let tilt = index - count / 2;
-        Line::new(
+        knob(
+            target,
             Point::new(cx, knob_y),
-            Point::new(cx + tilt, knob_y - knob_r),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(trim, 1))
-        .draw(target)?;
+            radius,
+            index - count / 2,
+            pedal.lit,
+        )?;
     }
 
-    // Footswitch and status LED at the foot of the box.
-    let switch_y = y + h - 9;
-    Circle::with_center(Point::new(x + w / 2, switch_y), 9)
-        .into_styled(PrimitiveStyle::with_fill(ink))
+    // Footswitch: a chrome dome in a dark well.
+    let switch_y = y + h - 11;
+    let switch = Point::new(x + w / 2, switch_y);
+    Circle::with_center(switch, 15)
+        .into_styled(PrimitiveStyle::with_fill(darken(base, 4, 5)))
         .draw(target)?;
-    Circle::with_center(Point::new(x + w / 2, switch_y), 5)
-        .into_styled(PrimitiveStyle::with_stroke(trim, 1))
+    let dome = Rectangle::new(Point::new(switch.x - 5, switch.y - 5), Size::new(11, 11));
+    target.fill_contiguous(
+        &dome,
+        (0..11i32).flat_map(move |row| {
+            let dy = row - 5;
+            let half = ((25 - dy * dy).max(0) as f32).sqrt() as i32;
+            let chrome = mix(
+                Rgb565::new(24, 48, 24),
+                Rgb565::new(6, 12, 6),
+                row as u32,
+                11,
+            );
+            (0..11i32).map(move |col| {
+                if (col - 5).abs() <= half {
+                    chrome
+                } else {
+                    darken(base, 4, 5)
+                }
+            })
+        }),
+    )?;
+    Circle::with_center(Point::new(switch.x - 1, switch.y - 2), 4)
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 1))
         .draw(target)?;
 
-    let led = if pedal.lit {
-        Rgb565::CSS_ORANGE_RED
+    // Status LED, with a halo when lit so it reads as emitting rather than
+    // painted on.
+    let led_at = Point::new(x + w / 2, y + h - 24);
+    if pedal.lit {
+        Circle::with_center(led_at, 9)
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(10, 6, 0)))
+            .draw(target)?;
+        Circle::with_center(led_at, 6)
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::CSS_ORANGE_RED))
+            .draw(target)?;
+        Circle::with_center(Point::new(led_at.x - 1, led_at.y - 1), 2)
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(31, 55, 20)))
+            .draw(target)?;
     } else {
-        dim(Rgb565::CSS_ORANGE_RED, 1, 5)
-    };
-    Circle::with_center(Point::new(x + w / 2, y + h - 20), 4)
-        .into_styled(PrimitiveStyle::with_fill(led))
-        .draw(target)?;
-
+        Circle::with_center(led_at, 6)
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(6, 4, 2)))
+            .draw(target)?;
+    }
     Ok(())
 }
 
-/// An amp head: a control row over a grille.
+/// An amp head: a lit control panel over a grille.
 fn draw_amp_face<D>(
     target: &mut D,
     area: Rectangle,
-    ink: Rgb565,
-    trim: Rgb565,
+    base: Rgb565,
+    lit: bool,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -390,35 +598,32 @@ where
     let x = area.top_left.x;
     let y = area.top_left.y;
 
-    // Control panel strip.
-    Rectangle::new(Point::new(x + 3, y + 3), Size::new(w as u32 - 6, 10))
-        .into_styled(PrimitiveStyle::with_fill(ink))
-        .draw(target)?;
+    // Control panel, recessed and brushed.
+    let panel = Rectangle::new(Point::new(x + 4, y + 5), Size::new(w as u32 - 8, 14));
+    gradient(target, panel, Rgb565::new(7, 14, 7), Rgb565::new(3, 6, 3))?;
     for index in 0..4 {
-        let cx = x + 6 + index * ((w - 12) / 3).max(1);
-        Circle::with_center(Point::new(cx, y + 8), 5)
-            .into_styled(PrimitiveStyle::with_stroke(trim, 1))
-            .draw(target)?;
+        let cx = x + 8 + index * ((w - 16) / 3).max(1);
+        knob(target, Point::new(cx, y + 12), 3, index - 2, lit)?;
     }
 
-    // Grille cloth: diagonal hatching, which reads as texture at this size
-    // where a fine weave would just alias into noise.
+    // Grille cloth: diagonal weave over a dark ground.
     let grille = Rectangle::new(
-        Point::new(x + 3, y + h / 2 + 7),
-        Size::new(w as u32 - 6, (h / 2 - 10).max(1) as u32),
+        Point::new(x + 4, y + h / 2 + 6),
+        Size::new(w as u32 - 8, (h / 2 - 10).max(1) as u32),
     );
     grille
-        .into_styled(PrimitiveStyle::with_fill(ink))
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(2, 4, 2)))
         .draw(target)?;
+    let weave = lighten(base, 1, 4);
     let mut offset = -h;
     while offset < w {
         Line::new(
-            Point::new(x + 3 + offset, y + h - 4),
-            Point::new(x + 3 + offset + h / 3, y + h / 2 + 7),
+            Point::new(x + 4 + offset, y + h - 5),
+            Point::new(x + 4 + offset + h / 3, y + h / 2 + 6),
         )
-        .into_styled(PrimitiveStyle::with_stroke(trim, 1))
+        .into_styled(PrimitiveStyle::with_stroke(weave, 1))
         .draw(target)?;
-        offset += 5;
+        offset += 4;
     }
     Ok(())
 }

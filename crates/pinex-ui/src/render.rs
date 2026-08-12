@@ -8,6 +8,14 @@ use crate::browser::View;
 
 pub trait Renderer {
     fn render(&mut self, view: &View<'_>);
+
+    /// Redraw only what moves between animation frames.
+    ///
+    /// Defaults to a full redraw, which is always correct; implementations that
+    /// pay for pixels — a real panel over SPI — override it.
+    fn render_scroll(&mut self, view: &View<'_>) {
+        self.render(view);
+    }
 }
 
 /// Formats a view as the lines a small display would show.
@@ -67,6 +75,12 @@ impl Renderer for Multi {
             renderer.render(view);
         }
     }
+
+    fn render_scroll(&mut self, view: &View<'_>) {
+        for renderer in self.0.iter_mut() {
+            renderer.render_scroll(view);
+        }
+    }
 }
 
 /// Prints to stdout. Used when running on a laptop with no panel.
@@ -87,6 +101,9 @@ impl Renderer for ConsoleRenderer {
         println!("{}", current.join("  |  "));
         self.last = Some(current);
     }
+
+    /// Nothing to say: a scroll does not change the text summary.
+    fn render_scroll(&mut self, _view: &View<'_>) {}
 }
 
 /// Keeps every frame it was given, so tests can assert what was displayed.

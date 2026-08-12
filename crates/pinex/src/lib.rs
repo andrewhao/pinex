@@ -187,9 +187,12 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             // Scrolling redraws on the animation clock, not on every loop tick:
             // the text only moves when the tick advances, so redrawing between
             // frames repaints an identical picture.
-            if changed || (animation_frame && view.animating()) {
+            if changed {
                 self.renderer.render(&view);
                 self.last_frame = Some(frame);
+            } else if animation_frame && view.animating() {
+                // Only the name band moves, so only redraw that.
+                self.renderer.render_scroll(&view);
             }
         }
         self.publish_snapshot();

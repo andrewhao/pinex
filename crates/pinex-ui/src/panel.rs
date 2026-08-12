@@ -101,6 +101,30 @@ where
     Ok(())
 }
 
+/// The band the scrolling names occupy, and nothing else.
+///
+/// Redrawing all 128x128 five times a second to move two strings by one
+/// character costs about a third of a Pi 3 core. This is the region that
+/// actually changes between animation frames.
+pub const NAME_BAND: Rectangle = Rectangle::new(Point::new(0, 107), Size::new(WIDTH, HEIGHT - 107));
+
+/// Redraw only the scrolling names, for animation frames.
+///
+/// Falls back to a full redraw on any page that has no scrolling band, so a
+/// caller can always use it and get a correct picture.
+pub fn draw_scroll<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    match view.connection {
+        Connection::Connected { .. } if view.screen == Screen::Slots => {
+            target.fill_solid(&NAME_BAND, BACKGROUND)?;
+            draw_slot_names(target, view)
+        }
+        _ => draw(target, view),
+    }
+}
+
 /// A header strip: page name left, a marker for the page you are on.
 fn draw_header<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
 where
@@ -202,6 +226,14 @@ where
         .draw(target)?;
     }
 
+    draw_slot_names(target, view)
+}
+
+/// The two scrolling name columns.
+fn draw_slot_names<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
     // Each slot's full name scrolls in its own column, under its own box, so
     // the two can be compared without either being cut and without the
     // artwork having to shrink to make room.

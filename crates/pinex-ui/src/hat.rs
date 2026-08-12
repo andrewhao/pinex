@@ -216,4 +216,10 @@ impl Renderer for HatDisplay {
             eprintln!("! panel: {e}");
         }
     }
+
+    fn render_scroll(&mut self, view: &View<'_>) {
+        if let Err(e) = panel::draw_scroll(&mut self.panel, view).map_err(|e| format!("{e:?}")) {
+            eprintln!("! panel: {e}");
+        }
+    }
 }
