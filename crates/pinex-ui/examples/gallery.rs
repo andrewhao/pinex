@@ -34,6 +34,13 @@ fn main() {
     for (title, view) in [
         ("PEDALBOARD theme — A/B", base(Screen::Slots)),
         (
+            "AMP PANEL theme — A/B",
+            View {
+                theme: pinex_ui::Theme::AmpPanel,
+                ..base(Screen::Slots)
+            },
+        ),
+        (
             "MARQUEE theme — A/B",
             View {
                 theme: pinex_ui::Theme::Marquee,

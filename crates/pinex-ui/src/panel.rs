@@ -22,7 +22,7 @@ use embedded_graphics::text::{Alignment, Baseline, Text};
 use crate::browser::{Connection, Screen, View};
 use crate::skin::{self, wrap, Pedal};
 use crate::theme::Theme;
-use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MIN_INPUT_TRIM_DB};
+use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MAX_PRESETS, MIN_INPUT_TRIM_DB};
 
 /// The HAT's panel geometry.
 pub const WIDTH: u32 = 128;
@@ -50,6 +50,7 @@ where
             Screen::Slots => match view.theme {
                 Theme::Pedalboard => draw_slots(target, view),
                 Theme::Marquee => draw_slots_marquee(target, view),
+                Theme::AmpPanel => draw_slots_amp(target, view),
             },
             Screen::Stomp => draw_stomp(target, view),
             Screen::Gain => draw_gain(target, view, firmware),
@@ -164,6 +165,99 @@ where
         .draw(target)?;
     }
     Ok(())
+}
+
+/// The amp-panel treatment of the A/B page.
+///
+/// Tolex ground, a brushed faceplate across the middle, and one chicken-head
+/// knob per slot whose **pointer angle is the preset number**. That is the idea
+/// worth having: a number at this size has to be read, but an angle is
+/// recognised, and a player already knows how to read a knob at a glance from
+/// four paces. The jewel lamp above shows the colour of whatever is playing.
+fn draw_slots_amp<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    // Cabinet.
+    skin::tolex(
+        target,
+        Rectangle::new(Point::zero(), Size::new(WIDTH, HEIGHT)),
+        Rgb565::new(6, 10, 5),
+    )?;
+
+    // Faceplate: a brushed metal strip the controls sit on.
+    let plate = Rectangle::new(Point::new(0, 26), Size::new(WIDTH, 62));
+    skin::brushed(target, plate)?;
+
+    draw_header(target, view)?;
+
+    // Pilot lamp, centred above the plate, lit in the playing preset's colour.
+    let playing_color = view
+        .active_slot
+        .and_then(|slot| view.slot_color_for(slot))
+        .map(skin::from_rgb8)
+        .unwrap_or(DIM);
+    skin::jewel(
+        target,
+        Point::new(WIDTH as i32 / 2, 15),
+        playing_color,
+        view.active_slot.is_some(),
+    )?;
+
+    for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
+        let x = 32 + index as i32 * 64;
+        let playing = view.active_slot == Some(slot);
+        let editing = view.selected == slot;
+        let preset = if editing {
+            Some(view.cursor)
+        } else {
+            view.slot_preset(slot)
+        };
+
+        // Angle carries the value; the number underneath is the confirmation.
+        let fraction = preset
+            .map(|p| p as f32 / (MAX_PRESETS - 1) as f32)
+            .unwrap_or(0.0);
+        // The knob skirt takes the slot's own colour, so A and B stay
+        // distinguishable even when neither is playing.
+        let face = if editing {
+            view.cursor_color
+        } else {
+            view.slot_color_for(slot)
+        }
+        .map(skin::from_rgb8)
+        .unwrap_or(DIM);
+        skin::chicken_head(target, Point::new(x, 52), 13, fraction, face, playing)?;
+
+        // Engraved legend: slot letter above, number below.
+        Text::with_alignment(
+            slot_letter(slot),
+            Point::new(x, 34),
+            MonoTextStyle::new(&FONT_6X10, if playing { PLAYING } else { DIM }),
+            Alignment::Center,
+        )
+        .draw(target)?;
+
+        let number = match preset {
+            Some(preset) => format!("{:02}", preset + 1),
+            None => "--".to_string(),
+        };
+        Text::with_alignment(
+            &number,
+            Point::new(x, 84),
+            MonoTextStyle::new(&FONT_9X15_BOLD, if playing { PLAYING } else { TEXT }),
+            Alignment::Center,
+        )
+        .draw(target)?;
+
+        if editing {
+            Rectangle::new(Point::new(x - 28, 87), Size::new(56, 2))
+                .into_styled(PrimitiveStyle::with_fill(WARN))
+                .draw(target)?;
+        }
+    }
+
+    draw_slot_names(target, view)
 }
 
 /// The Marquee treatment of the A/B page.
@@ -511,6 +605,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
 
     /// An in-memory panel, so drawing is testable with no hardware and no extra
     /// dependency. Records every pixel written.
@@ -666,6 +761,61 @@ mod tests {
         let left = (0..64).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         let right = (64..WIDTH).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         assert!(left && right, "both slots must be visible");
+    }
+
+    /// The knob angle carries the preset, so it must actually move with it —
+    /// a knob that looks the same at 01 and 20 is decoration, not a control.
+    #[test]
+    fn the_amp_panel_knob_angle_tracks_the_preset() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let render = |cursor: u8| {
+            let mut panel = Buffer::new();
+            let view = View {
+                theme: Theme::AmpPanel,
+                cursor,
+                cursor_name: Some("TF TILT - 1 ADV"),
+                cursor_color: Some([255, 63, 0]),
+                slot_presets: Some([cursor, 1, 2]),
+                active_slot: Some(Slot::A),
+                slot_names: [Some("TF TILT - 1 ADV"), Some("TF PROTEIN - BLUE 1"), None],
+                slot_colors: [Some([255, 63, 0]), Some([47, 0, 255]), None],
+                ..View::stub(&c)
+            };
+            draw(&mut panel, &view).unwrap();
+            panel.pixels
+        };
+
+        let low = render(0);
+        let mid = render(9);
+        let high = render(19);
+        assert_ne!(low, mid, "the knob must move between preset 1 and 10");
+        assert_ne!(mid, high, "the knob must move between preset 10 and 20");
+        assert_ne!(low, high, "the knob must move between preset 1 and 20");
+    }
+
+    /// Every theme must render every page without panicking or drawing nothing.
+    #[test]
+    fn all_themes_render_all_pages() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        for theme in [Theme::Pedalboard, Theme::Marquee, Theme::AmpPanel] {
+            for screen in [Screen::Slots, Screen::Stomp, Screen::Gain] {
+                let mut panel = Buffer::new();
+                let view = View {
+                    theme,
+                    screen,
+                    ..slots_view(&c, Slot::A)
+                };
+                draw(&mut panel, &view).unwrap();
+                assert!(
+                    panel.lit() > 0,
+                    "{theme:?} on {screen:?} drew an empty panel"
+                );
+            }
+        }
     }
 
     /// The ticker must repaint the same cells every frame, or the panel has to

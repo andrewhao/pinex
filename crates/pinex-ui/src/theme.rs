@@ -27,6 +27,9 @@ pub enum Theme {
     Pedalboard,
     /// Big numbers, bold colour, minimal chrome.
     Marquee,
+    /// A vintage amp control panel: tolex, brushed faceplate, chicken-head
+    /// knobs whose pointer angle encodes the preset, and a jewel pilot lamp.
+    AmpPanel,
 }
 
 impl Theme {
@@ -34,6 +37,7 @@ impl Theme {
     pub fn from_env() -> Self {
         match std::env::var("PINEX_THEME").as_deref() {
             Ok("marquee") | Ok("MARQUEE") => Self::Marquee,
+            Ok("amp") | Ok("AMP") | Ok("amppanel") => Self::AmpPanel,
             _ => Self::Pedalboard,
         }
     }
@@ -42,6 +46,7 @@ impl Theme {
         match self {
             Self::Pedalboard => "pedalboard",
             Self::Marquee => "marquee",
+            Self::AmpPanel => "amp",
         }
     }
 }
