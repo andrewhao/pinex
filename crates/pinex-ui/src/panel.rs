@@ -13,7 +13,7 @@
 //! words rather than by showing stale information.
 
 use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_5X8, FONT_6X10, FONT_9X15_BOLD};
-use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle};
@@ -117,8 +117,11 @@ where
     D: DrawTarget<Color = Rgb565>,
 {
     match view.connection {
+        // No clear before the draw. Clearing the band and then painting the
+        // text leaves the panel blank in between, which at five frames a second
+        // is a visible flicker. The names are drawn opaquely instead, so each
+        // glyph paints over its own previous pixels in a single pass.
         Connection::Connected { .. } if view.screen == Screen::Slots => {
-            target.fill_solid(&NAME_BAND, BACKGROUND)?;
             draw_slot_names(target, view)
         }
         _ => draw(target, view),
@@ -257,15 +260,21 @@ where
 
         // Both columns scroll on the same clock, so they move together rather
         // than shimmering against each other.
+        //
+        // Opaque, and padded to a constant width: a scrolling window is always
+        // SLOT_COLS characters, so the same cells are repainted every frame and
+        // nothing needs erasing first. A shorter, static name is padded to the
+        // same width so it too covers whatever preceded it.
         let text = skin::short_name(name);
         let window = skin::marquee(text, SLOT_COLS, view.tick);
-        Text::with_alignment(
-            &window,
-            Point::new(x + 29, 114),
-            MonoTextStyle::new(&FONT_5X8, color),
-            Alignment::Center,
-        )
-        .draw(target)?;
+        let padded = format!("{window:^SLOT_COLS$}");
+        let style = MonoTextStyleBuilder::new()
+            .font(&FONT_5X8)
+            .text_color(color)
+            .background_color(BACKGROUND)
+            .build();
+        Text::with_alignment(&padded, Point::new(x + 29, 114), style, Alignment::Center)
+            .draw(target)?;
     }
     Ok(())
 }
@@ -567,6 +576,64 @@ mod tests {
         let left = (0..64).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         let right = (64..WIDTH).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         assert!(left && right, "both slots must be visible");
+    }
+
+    /// The ticker must repaint the same cells every frame, or the panel has to
+    /// be cleared first — and clearing then drawing is what made it flicker.
+    #[test]
+    fn every_scroll_frame_covers_the_same_cells() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let view = View {
+            cursor_name: Some("TF MORNING GLORY - BRIGHT CUT 2"),
+            slot_presets: Some([0, 1, 2]),
+            active_slot: Some(Slot::A),
+            slot_names: [
+                Some("TF MORNING GLORY - BRIGHT CUT 2"),
+                Some("TF PROTEIN - BLUE 1"),
+                None,
+            ],
+            ..View::stub(&c)
+        };
+
+        // The set of pixels the name band touches must not vary with the tick.
+        let touched = |tick: u32| {
+            let mut panel = Buffer::new();
+            let view = View { tick, ..view };
+            draw_scroll(&mut panel, &view).unwrap();
+            let mut cells = Vec::new();
+            for y in NAME_BAND.top_left.y as u32..HEIGHT {
+                for x in 0..WIDTH {
+                    if panel.pixel_at(x, y) != Rgb565::BLACK {
+                        cells.push((x, y));
+                    }
+                }
+            }
+            cells
+        };
+
+        // Different ticks paint different glyphs, but a frame drawn straight
+        // after another must fully cover it — checked by drawing two ticks onto
+        // one buffer and comparing against the second drawn alone.
+        let mut overlaid = Buffer::new();
+        draw_scroll(&mut overlaid, &View { tick: 0, ..view }).unwrap();
+        draw_scroll(&mut overlaid, &View { tick: 9, ..view }).unwrap();
+
+        let mut fresh = Buffer::new();
+        draw_scroll(&mut fresh, &View { tick: 9, ..view }).unwrap();
+
+        for y in NAME_BAND.top_left.y as u32..HEIGHT {
+            for x in 0..WIDTH {
+                assert_eq!(
+                    overlaid.pixel_at(x, y),
+                    fresh.pixel_at(x, y),
+                    "pixel ({x},{y}) from an earlier frame survived; the ticker \
+                     would need clearing, which is what caused the flicker"
+                );
+            }
+        }
+        assert!(!touched(0).is_empty(), "the ticker drew nothing");
     }
 
     /// Both slots' full names must be readable at once — the screen exists to
