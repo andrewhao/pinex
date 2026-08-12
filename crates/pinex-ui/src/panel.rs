@@ -89,9 +89,9 @@ where
         };
         Text::with_alignment(
             &shown,
-            Point::new(WIDTH as i32 / 2, top + index as i32 * 9),
+            Point::new(2, top + index as i32 * 9),
             MonoTextStyle::new(&FONT_5X8, color),
-            Alignment::Center,
+            Alignment::Left,
         )
         .draw(target)?;
     }
@@ -143,90 +143,102 @@ where
 {
     draw_header(target, view)?;
 
+    // Both slots, drawn small enough that both full names fit underneath.
+    // A player deciding what to step on is comparing two names, so showing one
+    // and making them page for the other defeats the point of the screen.
     for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
         let x = 3 + index as i32 * 63;
         let playing = view.active_slot == Some(slot);
         let editing = view.selected == slot;
 
-        // Slot letter and its preset number share one line, so the boxes get
-        // the height instead. "A 01" reads as a unit anyway.
         let letter_color = if playing { PLAYING } else { DIM };
-        let label = match view.slot_preset(slot) {
-            Some(preset) => format!(
-                "{} {:02}",
-                if slot == Slot::A { "A" } else { "B" },
-                preset + 1
-            ),
-            None => (if slot == Slot::A { "A --" } else { "B --" }).to_string(),
+        let loaded = view.slot_preset(slot);
+        let label = match loaded {
+            Some(preset) => format!("{} {:02}", slot_letter(slot), preset + 1),
+            None => format!("{} --", slot_letter(slot)),
         };
         Text::with_alignment(
             &label,
-            Point::new(x + 29, 21),
+            Point::new(x + 29, 20),
             MonoTextStyle::new(&FONT_9X15_BOLD, letter_color),
             Alignment::Center,
         )
         .draw(target)?;
 
-        // The box the slot holds. When editing this slot, the cursor preview
-        // is drawn instead of what is loaded — you see what you would get.
-        let preset = if editing {
-            Some(view.cursor)
+        // The slot being edited previews the cursor; the other shows what it
+        // holds. Each box and its name below always agree.
+        let (preset, name, color) = if editing {
+            (Some(view.cursor), view.cursor_name, view.cursor_color)
         } else {
-            view.slot_preset(slot)
+            (loaded, view.slot_name_for(slot), view.slot_color_for(slot))
         };
-        let name = if editing {
-            view.cursor_name
-        } else {
-            view.slot_name_for(slot)
-        };
-        let color = if editing {
-            view.cursor_color
-        } else {
-            view.slot_color_for(slot)
-        };
+        let _ = preset;
 
-        let area = Rectangle::new(Point::new(x, 26), Size::new(59, 74));
-        match (preset, name) {
-            (Some(_), Some(name)) => {
-                skin::draw(target, area, &Pedal::new(name, color, playing))?;
-            }
-            _ => {
-                RoundedRectangle::new(area, CornerRadii::new(Size::new(3, 3)))
-                    .into_styled(PrimitiveStyle::with_stroke(DIM, 1))
-                    .draw(target)?;
-            }
+        let area = Rectangle::new(Point::new(x, 24), Size::new(59, 58));
+        match name {
+            Some(name) => skin::draw(target, area, &Pedal::new(name, color, playing))?,
+            None => RoundedRectangle::new(area, CornerRadii::new(Size::new(3, 3)))
+                .into_styled(PrimitiveStyle::with_stroke(DIM, 1))
+                .draw(target)?,
         }
 
-        // Editing marker: a bar under the slot you are changing, plus the
-        // preset it would become. The number under the box is what you get if
-        // you press; the number in the header is what is loaded now.
         if editing {
-            Rectangle::new(Point::new(x, 101), Size::new(59, 2))
+            Rectangle::new(Point::new(x, 84), Size::new(59, 2))
                 .into_styled(PrimitiveStyle::with_fill(WARN))
                 .draw(target)?;
         }
     }
 
-    // The full name of what the selected slot would become if you pressed.
-    // The number is part of the same string rather than a separate label, so a
-    // long name cannot run underneath it.
-    let preview = view
-        .cursor_name
-        .map(|name| format!("{:02} {}", view.cursor + 1, skin::short_name(name)));
-    draw_wrapped(target, preview.as_deref(), 110, 2, TEXT)?;
-
-    // Warn when the slot being edited is the one making sound: pressing then
-    // changes the tone immediately rather than silently staging it.
     if view.active_slot == Some(view.selected) {
         Text::with_alignment(
             "LIVE",
-            Point::new(WIDTH as i32 / 2, 21),
+            Point::new(WIDTH as i32 / 2, 20),
             MonoTextStyle::new(&FONT_6X10, WARN),
             Alignment::Center,
         )
         .draw(target)?;
     }
+
+    // Both full names, stacked. Each is prefixed with its slot letter and the
+    // preset number it refers to, so a two-line name cannot be mistaken for
+    // two one-line names belonging to different slots.
+    for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
+        let editing = view.selected == slot;
+        let (preset, name) = if editing {
+            (Some(view.cursor), view.cursor_name)
+        } else {
+            (view.slot_preset(slot), view.slot_name_for(slot))
+        };
+
+        let text = match (preset, name) {
+            (Some(preset), Some(name)) => format!(
+                "{} {:02} {}",
+                slot_letter(slot),
+                preset + 1,
+                skin::short_name(name)
+            ),
+            (Some(preset), None) => format!("{} {:02}", slot_letter(slot), preset + 1),
+            _ => format!("{} --", slot_letter(slot)),
+        };
+
+        let color = if view.active_slot == Some(slot) {
+            PLAYING
+        } else if editing {
+            WARN
+        } else {
+            TEXT
+        };
+        draw_wrapped(target, Some(&text), 92 + index as i32 * 18, 2, color)?;
+    }
     Ok(())
+}
+
+fn slot_letter(slot: Slot) -> &'static str {
+    match slot {
+        Slot::A => "A",
+        Slot::B => "B",
+        Slot::C => "C",
+    }
 }
 
 /// Stomp mode: one box, big, because there is only one.
@@ -518,6 +530,39 @@ mod tests {
         let left = (0..64).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         let right = (64..WIDTH).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         assert!(left && right, "both slots must be visible");
+    }
+
+    /// Both slots' full names must be readable at once — the screen exists to
+    /// compare two sounds, so showing one and hiding the other defeats it.
+    #[test]
+    fn both_slot_names_appear_on_the_ab_page() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let mut panel = Buffer::new();
+        draw(&mut panel, &slots_view(&c, Slot::A)).unwrap();
+
+        // Two name blocks live in the bottom third; both must have ink.
+        let ink_in = |from: u32, to: u32| {
+            (from..to).any(|y| (0..WIDTH).any(|x| panel.pixel_at(x, y) != Rgb565::BLACK))
+        };
+        assert!(ink_in(86, 108), "slot A's name row is empty");
+        assert!(ink_in(108, HEIGHT), "slot B's name row is empty");
+    }
+
+    /// The longest pair of real names must both fit without either being cut.
+    #[test]
+    fn the_longest_two_names_both_fit() {
+        let longest = "TF MORNING GLORY - BRIGHT CUT 2";
+        // Prefixed with the slot letter and number, as drawn.
+        let text = format!("A 20 {}", crate::skin::short_name(longest));
+        let lines = crate::skin::wrap(&text, FULL_COLS);
+        assert!(
+            lines.len() <= 2,
+            "{text:?} needs {} lines, only 2 fit per slot",
+            lines.len()
+        );
+        assert_eq!(lines.join(" "), text, "characters lost in wrapping");
     }
 
     /// The complaint that prompted the full-name area: names were cut off.
