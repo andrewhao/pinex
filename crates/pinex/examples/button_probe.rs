@@ -6,10 +6,19 @@
 
 use std::time::{Duration, Instant};
 
-use pinex_input::hat::{HatButtons, LABELS};
+use pinex_input::hat::HatButtons;
+use pinex_input::LABELS;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hold_display = std::env::args().any(|a| a == "--with-display");
+    // How long to watch. Long runs matter when the person pressing the buttons
+    // and the person reading the output are not in the room together.
+    let run_for = Duration::from_secs(
+        std::env::args()
+            .skip(1)
+            .find_map(|a| a.parse::<u64>().ok())
+            .unwrap_or(25),
+    );
 
     // Kept alive if requested: the app opens the display before the buttons,
     // and two rppal Gpio handles may not coexist as assumed.
@@ -21,12 +30,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let mut buttons = HatButtons::open()?;
+    let buttons = HatButtons::open()?;
     // The same samples, run through the same debouncer the app uses, so one
     // press tells us whether rppal saw it AND whether the debounce passed it.
     let mut debounce: pinex_input::debounce::Debouncer<8> = Default::default();
 
-    println!("press any button a few times; 25s");
+    println!("press any button a few times; {}s", run_for.as_secs());
     println!("{:>6}  RAW       DEBOUNCED", "t");
 
     let started = Instant::now();
@@ -34,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut raw_edges = 0usize;
     let mut fired = 0usize;
 
-    while started.elapsed() < Duration::from_secs(25) {
+    while started.elapsed() < run_for {
         let levels = buttons.raw_levels();
         let line: String = levels.iter().map(|l| if *l { '1' } else { '0' }).collect();
 
