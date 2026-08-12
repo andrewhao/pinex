@@ -371,8 +371,9 @@ where
         pedal.color
     } else {
         // Unplayed boxes recede rather than disappear: still identifiable, but
-        // never mistaken for the one making sound.
-        dim(pedal.color, 1, 3)
+        // never mistaken for the one making sound. This is where the contrast
+        // comes from, since the lit box cannot go brighter than its own colour.
+        dim(pedal.color, 1, 4)
     };
     let corners = CornerRadii::new(Size::new(4, 4));
 
@@ -394,7 +395,12 @@ where
         Point::new(area.top_left.x + 1, area.top_left.y + 1),
         Size::new(area.size.width - 2, area.size.height - 2),
     );
-    gradient(target, inner, lighten(base, 2, 5), darken(base, 2, 5))?;
+    // Gentle. A saturated colour is already at the top of its channel — red is
+    // (31,0,0) — so "brighter" can only mean mixing toward white, which drains
+    // the hue. A vivid red washed to pink reads as *dimmer*, not brighter,
+    // which is exactly the complaint this fixes. Keep the body close to the
+    // pedal's own colour and let contrast with the unlit box do the work.
+    gradient(target, inner, lighten(base, 1, 6), darken(base, 1, 4))?;
 
     // Gloss across the upper third, fading out — the iOS lozenge highlight.
     let gloss_height = (area.size.height / 3).max(3);
@@ -800,6 +806,110 @@ mod tests {
             later.contains(&first),
             "the scroll never returns to the beginning"
         );
+    }
+
+    /// A saturated colour must stay saturated when lit.
+    ///
+    /// The gloss mixes toward white, and overdoing it turned a vivid red into
+    /// pink — which reads as dimmer, not brighter, and was reported as "the red
+    /// pedal on the screen is dimmed" while the hardware showed vivid red.
+    #[test]
+    fn a_lit_saturated_colour_keeps_its_hue() {
+        use embedded_graphics::primitives::Rectangle;
+
+        let red = from_rgb8([255, 0, 0]);
+        let mut lit = TestTarget::new();
+        draw(
+            &mut lit,
+            Rectangle::new(Point::new(0, 0), Size::new(59, 76)),
+            &Pedal {
+                name: "TEST",
+                color: red,
+                archetype: Archetype::Overdrive,
+                lit: true,
+            },
+        )
+        .unwrap();
+
+        // Across the body, red must dominate the other channels: a washed-out
+        // pastel has green and blue creeping up to meet it.
+        let body: Vec<Rgb565> = lit.pixels.iter().filter(|p| p.r() > 8).copied().collect();
+        assert!(!body.is_empty(), "nothing red was drawn");
+        let washed = body
+            .iter()
+            .filter(|p| p.g() as u16 * 2 > p.r() as u16 * 3)
+            .count();
+        assert!(
+            washed * 4 < body.len(),
+            "{washed} of {} red pixels are washed toward white",
+            body.len()
+        );
+    }
+
+    /// Lit and unlit must be plainly different, since that is what tells a
+    /// player which box is making sound.
+    #[test]
+    fn a_lit_box_is_clearly_brighter_than_an_unlit_one() {
+        use embedded_graphics::primitives::Rectangle;
+
+        let area = Rectangle::new(Point::new(0, 0), Size::new(59, 76));
+        let brightness = |lit: bool| {
+            let mut target = TestTarget::new();
+            draw(
+                &mut target,
+                area,
+                &Pedal {
+                    name: "TEST",
+                    color: from_rgb8([255, 0, 0]),
+                    archetype: Archetype::Overdrive,
+                    lit,
+                },
+            )
+            .unwrap();
+            target.pixels.iter().map(|p| p.r() as u32).sum::<u32>()
+        };
+        let on = brightness(true);
+        let off = brightness(false);
+        assert!(
+            on > off * 2,
+            "lit ({on}) should be clearly brighter than unlit ({off})"
+        );
+    }
+
+    /// A tiny in-memory target, so drawing is checkable without a panel.
+    struct TestTarget {
+        pixels: Vec<Rgb565>,
+    }
+
+    impl TestTarget {
+        fn new() -> Self {
+            Self {
+                pixels: vec![Rgb565::BLACK; 64 * 80],
+            }
+        }
+    }
+
+    impl Dimensions for TestTarget {
+        fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
+            embedded_graphics::primitives::Rectangle::new(Point::zero(), Size::new(64, 80))
+        }
+    }
+
+    impl DrawTarget for TestTarget {
+        type Color = Rgb565;
+        type Error = core::convert::Infallible;
+
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(point, color) in pixels {
+                if (0..64).contains(&point.x) && (0..80).contains(&point.y) {
+                    self.pixels[point.y as usize * 64 + point.x as usize] = color;
+                }
+            }
+            Ok(())
+        }
     }
 
     #[test]

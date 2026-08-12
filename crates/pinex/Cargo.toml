@@ -35,3 +35,7 @@ required-features = ["hat"]
 [[example]]
 name = "button_probe"
 required-features = ["hat"]
+
+[[example]]
+name = "probe_view"
+required-features = ["hat"]
