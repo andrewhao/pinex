@@ -99,7 +99,12 @@ fn renderers() -> Multi {
 fn input() -> Box<dyn pinex_input::InputSource> {
     match pinex_input::hat::HatButtons::open() {
         Ok(buttons) => {
-            eprintln!("HAT buttons: joystick = browse, press/KEY1 = select, KEY2 = refresh");
+            // Printed from the table rather than written out again: the last
+            // time these were two separate lists they drifted apart.
+            eprintln!("HAT buttons:");
+            for (label, event) in pinex_input::LABELS.iter().zip(pinex_input::BINDINGS) {
+                eprintln!("  {label:<10} {event:?}");
+            }
             Box::new(buttons)
         }
         Err(e) => {

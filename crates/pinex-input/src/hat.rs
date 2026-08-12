@@ -6,12 +6,13 @@
 //! All inputs are active-low with the internal pull-up engaged, which is how
 //! the HAT wires them: pressed pulls the pin to ground.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use rppal::gpio::{Gpio, InputPin};
 
 use crate::debounce::Debouncer;
-use crate::{InputEvent, InputSource};
+use crate::{InputEvent, InputSource, BINDINGS};
 
 /// BCM pin numbers, from the vendor's demo code.
 pub mod pins {
@@ -25,37 +26,18 @@ pub mod pins {
     pub const KEY3: u8 = 16;
 }
 
-/// Human names for each input, in the same order as [`BINDINGS`].
-pub const LABELS: [&str; 8] = [
-    "joy UP",
-    "joy DOWN",
-    "joy LEFT",
-    "joy RIGHT",
-    "joy PRESS",
-    "KEY1",
-    "KEY2",
-    "KEY3",
-];
-
-/// What each input does. Chosen so the two most common actions — step through
-/// presets — are the joystick's natural axis, and the destructive one (load a
-/// preset) needs a deliberate press.
-const BINDINGS: [(&str, InputEvent); 8] = [
-    ("joy up", InputEvent::Prev),
-    ("joy down", InputEvent::Next),
-    ("joy left", InputEvent::Prev),
-    ("joy right", InputEvent::Next),
-    ("joy press", InputEvent::Select),
-    ("KEY1", InputEvent::Select),
-    ("KEY2", InputEvent::Refresh),
-    ("KEY3", InputEvent::Quit),
-];
-
 pub struct HatButtons {
     pins: Vec<InputPin>,
     /// Requires a level to hold steady before believing it. See
     /// [`crate::debounce`] for why the naive version fired on noise.
     debounce: Debouncer<8>,
+    /// Presses seen but not yet returned.
+    ///
+    /// The debouncer settles the whole eight-bit vector at once, so two buttons
+    /// pressed within the same window arrive together. Returning one and
+    /// discarding the rest lost them for good — they could not re-fire until
+    /// physically released. They queue instead.
+    pending: VecDeque<usize>,
 }
 
 impl HatButtons {
@@ -78,12 +60,8 @@ impl HatButtons {
         Ok(Self {
             pins: opened,
             debounce: Debouncer::new(),
+            pending: VecDeque::new(),
         })
-    }
-
-    /// What the labels mean, for the log line on start-up.
-    pub fn bindings() -> impl Iterator<Item = (&'static str, InputEvent)> {
-        BINDINGS.into_iter()
     }
 
     /// Raw pin levels, undebounced. `true` means pressed (the pin is low).
@@ -101,12 +79,16 @@ impl HatButtons {
     /// A newly pressed input, once the level has held steady. Holding a button
     /// does not repeat, which matters when the action is "load a preset".
     fn newly_pressed(&mut self) -> Option<usize> {
+        if let Some(index) = self.pending.pop_front() {
+            return Some(index);
+        }
         // Active-low: the HAT pulls a pin to ground when its switch closes.
         let mut levels = [false; 8];
         for (slot, pin) in levels.iter_mut().zip(self.pins.iter()) {
             *slot = pin.is_low();
         }
-        self.debounce.sample(levels).into_iter().next()
+        self.pending.extend(self.debounce.sample(levels));
+        self.pending.pop_front()
     }
 }
 
@@ -136,7 +118,7 @@ impl InputSource for HatButtons {
         let deadline = std::time::Instant::now() + timeout;
         loop {
             if let Some(index) = self.newly_pressed() {
-                return Some(BINDINGS[index].1);
+                return Some(BINDINGS[index]);
             }
             if std::time::Instant::now() >= deadline {
                 return None;

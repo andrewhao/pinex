@@ -39,3 +39,7 @@ required-features = ["hat"]
 [[example]]
 name = "probe_view"
 required-features = ["hat"]
+
+[[example]]
+name = "binding_test"
+required-features = ["hat"]

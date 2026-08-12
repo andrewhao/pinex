@@ -59,6 +59,40 @@ impl InputEvent {
     }
 }
 
+/// Human names for each input, in the same order as [`BINDINGS`].
+pub const LABELS: [&str; 8] = [
+    "joy UP",
+    "joy DOWN",
+    "joy LEFT",
+    "joy RIGHT",
+    "joy PRESS",
+    "KEY1",
+    "KEY2",
+    "KEY3",
+];
+
+/// What each input does, indexed the same way as [`LABELS`].
+///
+/// Events only — the name lives in `LABELS` and nowhere else. When this array
+/// carried its own copy of the label the two drifted apart in casing, which is
+/// a small version of exactly the failure that made this table wrong: the same
+/// fact written down twice, and only one copy maintained.
+pub const BINDINGS: [InputEvent; 8] = [
+    // Up/down steps the value; left/right swaps which slot is being edited,
+    // which is the pair of gestures A/B management needs.
+    InputEvent::Prev,
+    InputEvent::Next,
+    InputEvent::Mode,
+    InputEvent::Mode,
+    InputEvent::Select,
+    InputEvent::Select,
+    InputEvent::Page,
+    // Refresh, not Quit. Quit ended the process, and under `Restart=always`
+    // that is a panel which blanks and reboots when you press the button the
+    // manual labels "Refresh". A stage box should have no control that stops it.
+    InputEvent::Refresh,
+];
+
 /// A source of player input.
 pub trait InputSource: Send {
     /// Wait up to `timeout` for the next input.
@@ -214,6 +248,70 @@ impl InputSource for StdinInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The table in `docs/manual.md`, duplicated deliberately.
+    ///
+    /// Nothing asserted the *contents* of `BINDINGS` before this. The pin-to-
+    /// index half was verified on hardware by `button_test`, which reports raw
+    /// indices and never consults `BINDINGS`; the index-to-event half was
+    /// tested by nothing at all. So when the three-page UI landed, this table
+    /// kept the old mapping and every test still passed: left and right
+    /// scrolled presets, KEY2 fired a 21-request refresh at the pedal, and KEY3
+    /// quit the process.
+    ///
+    /// If you change a binding, change the manual in the same commit and this
+    /// test will hold you to it.
+    const DOCUMENTED: [InputEvent; 8] = [
+        InputEvent::Prev,
+        InputEvent::Next,
+        InputEvent::Mode,
+        InputEvent::Mode,
+        InputEvent::Select,
+        InputEvent::Select,
+        InputEvent::Page,
+        InputEvent::Refresh,
+    ];
+
+    #[test]
+    fn the_bindings_match_the_manual() {
+        assert_eq!(BINDINGS, DOCUMENTED);
+    }
+
+    /// Labels, pins and bindings are indexed by the same number in three
+    /// separate arrays. If they ever disagree, every button does someone
+    /// else's job.
+    #[test]
+    fn labels_and_bindings_stay_in_step() {
+        assert_eq!(
+            LABELS.len(),
+            BINDINGS.len(),
+            "a button has a name but no action, or the reverse"
+        );
+    }
+
+    /// A stage box must have no control that stops it. Under `Restart=always`
+    /// a Quit binding does not even shut the service down — it bounces it,
+    /// blanking the panel mid-set.
+    #[test]
+    fn no_button_can_quit() {
+        assert!(
+            !BINDINGS.contains(&InputEvent::Quit),
+            "a HAT button is bound to Quit"
+        );
+    }
+
+    /// Every page must be reachable from the panel. The Gain page was
+    /// unreachable for three commits because nothing was bound to Page.
+    #[test]
+    fn paging_and_slot_switching_are_both_reachable() {
+        for required in [InputEvent::Page, InputEvent::Mode, InputEvent::Select] {
+            assert!(
+                BINDINGS.contains(&required),
+                "{required:?} is not bound to any button, so it cannot be done \
+                 from the panel"
+            );
+        }
+    }
 
     #[test]
     fn scripted_input_replays_in_order_then_reports_nothing() {
