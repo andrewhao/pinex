@@ -9,6 +9,12 @@ date the work was written. Newest last.
 | [2026-08-02-pinex-proto-scaffolding.md](2026-08-02-pinex-proto-scaffolding.md) | Implementation plan — M0 workspace + `pinex-proto` | ✅ Complete (`3a390ff`) |
 | [2026-08-03-protocol-ground-truth-and-pty-simulator.md](2026-08-03-protocol-ground-truth-and-pty-simulator.md) | Implementation plan — settle the protocol against captures, then build a PTY pedal simulator | ✅ Complete |
 
+No plan document was written for the hardware, display and stage-UI work that
+followed; it ran directly against a real pedal and a real panel, with the
+findings recorded in commit messages, in `docs/protocol-metadata.md`, and in the
+open questions below. That was the right call for work whose next step depended
+on what the hardware said, but it does mean the commit log is the record.
+
 ## Conventions
 
 - **Design docs** hold decisions and rationale. They are amended, not replaced —
@@ -81,5 +87,42 @@ Still open:
   pacing, and reconnect handling should assume this can happen mid-set.
 - **`offset_from_start`** — removed entirely. The fields it addressed shift
   between firmwares; anything near the start of the state must be walked.
-- **Anything touching a Pi, display, or GPIO.** The seams exist and are tested
-  with fakes; only `GpioInput` and the SPI panel are unwritten.
+- ~~**Anything touching a Pi, display, or GPIO.**~~ — **done.** Running on a
+  Pi 3 as a systemd user service against the pedal, driving a Waveshare 1.44"
+  ST7735S panel with its joystick and keys. See `docs/harness.md` for how the
+  same code runs with none of it attached.
+
+**Update, hardware sessions of 2026-08-10/11.** The Pi, the panel and the stage
+UI landed. What those sessions closed, and what they opened:
+
+- ~~**Does it run on a Pi?**~~ — yes, and two bugs only the Pi could show:
+  `StandardInput=null` made the service exit in ten milliseconds (systemd then
+  crash-looped it), and opening the tty once meant no pedal meant no program.
+- ~~**A/B slot management, stomp mode, global gain**~~ — built and verified
+  end to end against the pedal. Assigning one slot never disturbs the other,
+  which is asserted rather than assumed after a stale-snapshot bug where two
+  sequential writes silently undid each other.
+- ~~**Panel orientation, window offset, colour order**~~ — 90°, `(2,1)`, and
+  **BGR**. All three are properties of the glass and all three are environment
+  variables, because none can be inferred from code.
+
+Still open:
+
+- **Bulk preset fetches are unpaced.** Twenty back-to-back requests is what
+  wedged the pedal on 2026-08-09. Nothing has been done about it; the reconnect
+  loop copes if it happens, but not fetching that fast in the first place would
+  be better.
+- **Master volume (`0x0309`) is unimplemented.** "Global gain" is currently
+  input trim, which is in the state and safe to patch. Master volume is a
+  separate message documented by `Builty/TonexOneController` and never sent by
+  us. See `docs/protocol-metadata.md`.
+- **112 named parameters are unreachable.** Single-parameter writes would turn
+  this from a preset browser into a tone controller. Deliberately out of scope
+  so far — the goal said effects settings were not needed.
+- **The full ~30 KB preset dump has never been captured**, so the 329 f32
+  parameter values in each preset summary remain unmapped.
+- **The Marquee and amp-panel themes are barely tested on the glass.** Only
+  Pedalboard has had real scrutiny. Legibility at stage distance is the whole
+  point of the other two and is not something the simulator can answer.
+- **No enclosure, no power plan, no boot-time trimming.** M4 in the design doc,
+  still deferred.

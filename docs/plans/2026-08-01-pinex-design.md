@@ -17,6 +17,17 @@
 >
 > The locked *decisions* survive all three; only the mechanisms changed. Body
 > text is preserved verbatim as written rather than rewritten in place.
+>
+> **Second update, after the hardware sessions of 2026-08-09..11.** M1, M2 and
+> M3 are built and running on a Pi against a real pedal and a real panel. Two
+> further claims here were overturned by hardware:
+>
+> | Superseded here | Corrected by |
+> |---|---|
+> | "Stage into the inactive slot, then switch" as the universal glitch-free path (M3) | A pedal in **stomp mode** accepts that and silently reverts it a second later. `PedalState::change_preset` writes in place there and stages only in A/B mode. Both routes are hardware-verified |
+> | "`embedded-graphics` + `mipidsi` driving an **ST7789**" (M2) | The Waveshare 1.44" HAT is an **ST7735S**, 128×128, wired **BGR**, needing a `(1,2)` window offset that swaps axes with rotation |
+>
+> Milestone status is tabulated under "Milestones" below.
 
 ## Context
 
@@ -122,6 +133,26 @@ Reader thread owns the tty and emits `PedalEvent` on a channel. Renderer and web
 ---
 
 ## Milestones
+
+**Status as of 2026-08-11:**
+
+| | State |
+|---|---|
+| M0 — Scaffolding | ✅ workspace, cross-compilation, deployed to the Pi |
+| M1 — Read-only | ✅ handshake, state, all 20 preset names, unsolicited broadcasts, debug web page, reconnect |
+| M2 — Display | ✅ ST7735S over SPI, three pages, three themes |
+| M3 — Footswitches + write path | ✅ write path hardware-verified in both slot modes; input is the HAT's joystick and keys rather than wired footswitches |
+| M4 — Stage hardening | ⏳ deferred, as planned |
+
+Two deviations from the plan below, both deliberate:
+
+- **Input is the HAT's joystick and three keys**, not two wired GPIO
+  footswitches. The HAT was already there and gives eight inputs; wired
+  switches remain the right answer for actually standing on, and the
+  `InputSource` seam means adding them touches nothing else.
+- **`pinex-web` uses `std::net`, not `tiny_http`.** Same blocking accept loop,
+  one fewer dependency to cross-compile.
+
 
 ### M0 — Scaffolding
 Workspace skeleton, `cross` + Docker Desktop working, `aarch64-unknown-linux-gnu` binary rsync'd to the Pi and running. Proves the loop end to end before any real logic.
