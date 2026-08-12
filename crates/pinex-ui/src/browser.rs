@@ -127,8 +127,18 @@ impl<'a> View<'a> {
     ///
     /// The app redraws on change alone otherwise, so without this a scrolling
     /// name would move once and then freeze.
+    ///
+    /// Only the Slots page shows the A/B names, and they are the only thing
+    /// that scrolls. Answering from those names on a page that does not show
+    /// them drove the app into the animation path five times a second on the
+    /// Stomp page, where [`crate::panel::draw_scroll`] has no band to redraw and
+    /// falls back to a full redraw — which starts by clearing the panel. The
+    /// result was a steady flicker showing a picture that had not changed.
     pub fn animating(&self) -> bool {
         const SLOT_COLS: usize = 11;
+        if self.screen != Screen::Slots {
+            return false;
+        }
         [Slot::A, Slot::B]
             .into_iter()
             .filter_map(|slot| {
@@ -562,6 +572,44 @@ mod tests {
             "an out-of-turn reply started another sweep: {cmds:?}"
         );
         assert_eq!(b.name_at(7), Some("SURPRISE"), "but its name is still kept");
+    }
+
+    /// Only the Slots page shows the A/B names, so only the Slots page has
+    /// anything that scrolls.
+    ///
+    /// This reported "animating" from the A/B names whatever page was showing.
+    /// On the Stomp page that made the app call the scroll path five times a
+    /// second, and [`crate::panel::draw_scroll`] has no scrolling band there, so
+    /// it falls back to a full redraw — which begins by clearing the screen.
+    /// A full clear-and-repaint at 5 Hz is a visible flicker on the glass, and
+    /// it costs about a third of a Pi 3 core to show a picture that never
+    /// changed.
+    #[test]
+    fn only_the_page_that_shows_scrolling_names_animates() {
+        let connection = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        // Long enough that it cannot fit the slot column, so it genuinely wants
+        // to scroll wherever scrolling applies.
+        const LONG: &str = "MORNING GLORY - BRIGHT CUT 3";
+        let view_on = |screen| View {
+            screen,
+            slot_names: [Some(LONG), Some(LONG), Some(LONG)],
+            cursor_name: Some(LONG),
+            ..View::stub(&connection)
+        };
+
+        assert!(
+            view_on(Screen::Slots).animating(),
+            "the Slots page shows the A/B names, so a long one must scroll"
+        );
+        for still in [Screen::Stomp, Screen::Gain] {
+            assert!(
+                !view_on(still).animating(),
+                "{still:?} shows no A/B names, so nothing on it can scroll — \
+                 claiming otherwise repaints the whole panel five times a second"
+            );
+        }
     }
 
     #[test]
