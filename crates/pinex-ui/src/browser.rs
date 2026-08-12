@@ -197,6 +197,8 @@ pub struct PresetBrowser {
     gain_db: f32,
     tick: u32,
     theme: crate::theme::Theme,
+    /// The preset whose name we are waiting for, while walking them all.
+    awaiting_preset: Option<u8>,
 }
 
 impl PresetBrowser {
@@ -343,6 +345,17 @@ impl PresetBrowser {
                 if let Some(slot) = self.names.get_mut(info.index as usize) {
                     *slot = Some(info.name.clone());
                 }
+                // Ask for the next one only when the one we asked for arrives.
+                // Guarded by the index so an unsolicited reply cannot start a
+                // second sweep running alongside the first.
+                if self.awaiting_preset == Some(info.index) {
+                    let next = info.index + 1;
+                    if next < MAX_PRESETS {
+                        self.awaiting_preset = Some(next);
+                        return vec![Command::RequestPreset(next)];
+                    }
+                    self.awaiting_preset = None;
+                }
                 Vec::new()
             }
             // Deliberately does not clear `pending`: the pedal acknowledges
@@ -451,11 +464,17 @@ impl PresetBrowser {
         }
     }
 
-    /// Ask for the state and every preset name.
+    /// Ask for the state, then walk the presets one at a time.
+    ///
+    /// **Not twenty-one requests at once.** That burst is what left the pedal
+    /// silent to everything including the handshake, needing a power cycle —
+    /// and it was reachable from a button labelled "Refresh". Each preset is
+    /// requested only once the previous one has answered, which is
+    /// self-pacing: the pedal sets the rate, and a pedal that has stopped
+    /// answering is never asked again.
     fn sync_all(&mut self) -> Vec<Command> {
-        let mut out = vec![Command::RequestState];
-        out.extend((0..MAX_PRESETS).map(Command::RequestPreset));
-        out
+        self.awaiting_preset = Some(0);
+        vec![Command::RequestState, Command::RequestPreset(0)]
     }
 }
 
@@ -489,19 +508,60 @@ mod tests {
         b
     }
 
+    /// Connecting must not fire twenty-one requests at the pedal. That burst
+    /// is what wedged it, and it was reachable from the Refresh button.
     #[test]
-    fn connecting_asks_for_the_state_and_every_preset_name() {
+    fn connecting_asks_for_one_preset_at_a_time() {
         let mut b = PresetBrowser::new();
         let cmds = b.apply(&PedalEvent::Connected {
             firmware: "1.3.17".into(),
         });
 
-        assert_eq!(cmds[0], Command::RequestState);
-        assert_eq!(cmds.len(), 1 + MAX_PRESETS as usize);
-        for i in 0..MAX_PRESETS {
-            assert!(cmds.contains(&Command::RequestPreset(i)), "missing {i}");
-        }
+        assert_eq!(
+            cmds,
+            vec![Command::RequestState, Command::RequestPreset(0)],
+            "the sweep must start with one request, not twenty"
+        );
         assert!(b.view().connection.is_connected());
+    }
+
+    /// ...but it must still fetch all of them, each answer pulling the next.
+    #[test]
+    fn every_preset_is_fetched_as_the_previous_one_answers() {
+        let mut b = connected();
+        let mut requested = vec![0u8];
+
+        for index in 0..MAX_PRESETS {
+            let cmds = b.apply(&named(index, &format!("PRESET {index}")));
+            match cmds.as_slice() {
+                [Command::RequestPreset(next)] => requested.push(*next),
+                [] => assert_eq!(index, MAX_PRESETS - 1, "the sweep stopped early at {index}"),
+                other => panic!("unexpected commands at {index}: {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            requested.len(),
+            MAX_PRESETS as usize,
+            "not every preset asked for"
+        );
+        for index in 0..MAX_PRESETS {
+            assert!(requested.contains(&index), "preset {index} never requested");
+            assert!(b.name_at(index).is_some(), "preset {index} has no name");
+        }
+    }
+
+    /// An unsolicited reply must not start a second sweep racing the first.
+    #[test]
+    fn an_unexpected_preset_reply_does_not_start_another_sweep() {
+        let mut b = connected();
+        // Mid-sweep, waiting on preset 0; a reply for 7 arrives unbidden.
+        let cmds = b.apply(&named(7, "SURPRISE"));
+        assert!(
+            cmds.is_empty(),
+            "an out-of-turn reply started another sweep: {cmds:?}"
+        );
+        assert_eq!(b.name_at(7), Some("SURPRISE"), "but its name is still kept");
     }
 
     #[test]
