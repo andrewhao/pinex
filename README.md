@@ -23,6 +23,14 @@ loaded, and choosing what is loaded next.
 - **A debug web page** on port 8080: connection, firmware, every preset name
   and colour, and recent frames with raw hex
 
+## Using it
+
+Joystick up/down scrolls presets, left/right swaps which slot you are editing,
+press applies. KEY2 changes page (A/B → Stomp → Gain), KEY3 refreshes.
+Scrolling never changes your sound — nothing is applied until you press.
+
+Full details in [`docs/manual.md`](docs/manual.md).
+
 ## Running it without any hardware
 
 Every layer has a software stand-in, so the whole system runs on a laptop with
@@ -67,6 +75,8 @@ The protocol was reverse-engineered from two published implementations and then
 including the preset-change strategy both reference implementations use, which a
 pedal in stomp mode silently reverts.
 
+- [`docs/manual.md`](docs/manual.md) — every control, and how to switch modes,
+  choose a preset and apply it
 - [`docs/protocol-metadata.md`](docs/protocol-metadata.md) — what the pedal
   exposes, what we read, and what we deliberately do not fabricate
 - [`docs/plans/README.md`](docs/plans/README.md) — milestone status and the
