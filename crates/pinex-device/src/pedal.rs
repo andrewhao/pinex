@@ -35,7 +35,7 @@ impl Pedal {
     /// On the Pi this is `/dev/tonex`; in tests it is a PTY device path.
     pub fn open(path: &Path) -> io::Result<Self> {
         let reading = TtyTransport::open(path)?;
-        let writing = reading.try_clone()?;
+        let writing = TtyTransport::open_writer(path)?;
         Ok(Self::with_transports(reading, writing))
     }
 
