@@ -32,7 +32,14 @@ fn main() {
     };
 
     for (title, view) in [
-        ("A/B SLOTS — editing B, A playing", base(Screen::Slots)),
+        ("PEDALBOARD theme — A/B", base(Screen::Slots)),
+        (
+            "MARQUEE theme — A/B",
+            View {
+                theme: pinex_ui::Theme::Marquee,
+                ..base(Screen::Slots)
+            },
+        ),
         ("STOMP — slot C", base(Screen::Stomp)),
         (
             "GAIN",

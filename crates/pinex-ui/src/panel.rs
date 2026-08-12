@@ -21,6 +21,7 @@ use embedded_graphics::text::{Alignment, Baseline, Text};
 
 use crate::browser::{Connection, Screen, View};
 use crate::skin::{self, wrap, Pedal};
+use crate::theme::Theme;
 use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MIN_INPUT_TRIM_DB};
 
 /// The HAT's panel geometry.
@@ -46,7 +47,10 @@ where
     match view.connection {
         Connection::Disconnected => draw_no_pedal(target),
         Connection::Connected { firmware } => match view.screen {
-            Screen::Slots => draw_slots(target, view),
+            Screen::Slots => match view.theme {
+                Theme::Pedalboard => draw_slots(target, view),
+                Theme::Marquee => draw_slots_marquee(target, view),
+            },
             Screen::Stomp => draw_stomp(target, view),
             Screen::Gain => draw_gain(target, view, firmware),
         },
@@ -160,6 +164,92 @@ where
         .draw(target)?;
     }
     Ok(())
+}
+
+/// The Marquee treatment of the A/B page.
+///
+/// Numbers at 10x20 — the largest the panel carries — over a bold colour spine
+/// per slot. No artwork: at four paces the box detail is mush anyway, and what
+/// survives is the number and the colour. The playing slot gets a filled spine
+/// and its number in green; the other is outlined.
+fn draw_slots_marquee<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_header(target, view)?;
+
+    for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
+        let x = index as i32 * 64;
+        let playing = view.active_slot == Some(slot);
+        let editing = view.selected == slot;
+        let preset = if editing {
+            Some(view.cursor)
+        } else {
+            view.slot_preset(slot)
+        };
+        let rgb = if editing {
+            view.cursor_color
+        } else {
+            view.slot_color_for(slot)
+        };
+        let color = rgb.map(skin::from_rgb8).unwrap_or(DIM);
+
+        // Colour spine: filled when playing, a bar when not. This is the part
+        // that reads first from a distance.
+        let spine = Rectangle::new(Point::new(x + 4, 24), Size::new(56, 62));
+        if playing {
+            spine
+                .into_styled(PrimitiveStyle::with_fill(skin::dim(color, 1, 3)))
+                .draw(target)?;
+            Rectangle::new(Point::new(x + 4, 24), Size::new(56, 5))
+                .into_styled(PrimitiveStyle::with_fill(color))
+                .draw(target)?;
+        } else {
+            Rectangle::new(Point::new(x + 4, 24), Size::new(56, 5))
+                .into_styled(PrimitiveStyle::with_fill(skin::dim(color, 1, 2)))
+                .draw(target)?;
+        }
+
+        // Slot letter, small, above the number.
+        Text::with_alignment(
+            slot_letter(slot),
+            Point::new(x + 32, 40),
+            MonoTextStyle::new(&FONT_6X10, if playing { PLAYING } else { DIM }),
+            Alignment::Center,
+        )
+        .draw(target)?;
+
+        // The number, as big as the panel allows.
+        let text = match preset {
+            Some(preset) => format!("{:02}", preset + 1),
+            None => "--".to_string(),
+        };
+        Text::with_alignment(
+            &text,
+            Point::new(x + 32, 68),
+            MonoTextStyle::new(&FONT_10X20, if playing { PLAYING } else { TEXT }),
+            Alignment::Center,
+        )
+        .draw(target)?;
+
+        if editing {
+            Rectangle::new(Point::new(x + 4, 88), Size::new(56, 2))
+                .into_styled(PrimitiveStyle::with_fill(WARN))
+                .draw(target)?;
+        }
+    }
+
+    if view.active_slot == Some(view.selected) {
+        Text::with_alignment(
+            "LIVE",
+            Point::new(WIDTH as i32 / 2, 20),
+            MonoTextStyle::new(&FONT_6X10, WARN),
+            Alignment::Center,
+        )
+        .draw(target)?;
+    }
+
+    draw_slot_names(target, view)
 }
 
 /// The two footswitch slots, side by side.

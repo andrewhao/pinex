@@ -105,6 +105,8 @@ pub struct View<'a> {
     pub slot_colors: [Option<[u8; 3]>; 3],
     /// Frame counter, driving any scrolling text.
     pub tick: u32,
+    /// Which look the panel wears.
+    pub theme: crate::theme::Theme,
 }
 
 impl<'a> View<'a> {
@@ -162,6 +164,7 @@ impl<'a> View<'a> {
             slot_names: [None; 3],
             slot_colors: [None; 3],
             tick: 0,
+            theme: crate::theme::Theme::default(),
         }
     }
 }
@@ -193,6 +196,7 @@ pub struct PresetBrowser {
     stomp_mode: bool,
     gain_db: f32,
     tick: u32,
+    theme: crate::theme::Theme,
 }
 
 impl PresetBrowser {
@@ -230,7 +234,13 @@ impl PresetBrowser {
                 self.slot_color(Slot::C),
             ],
             tick: self.tick,
+            theme: self.theme,
         }
+    }
+
+    /// Choose the panel's look.
+    pub fn set_theme(&mut self, theme: crate::theme::Theme) {
+        self.theme = theme;
     }
 
     /// Advance the animation clock.

@@ -16,7 +16,9 @@ pub mod panel;
 pub mod preview;
 pub mod render;
 pub mod skin;
+pub mod theme;
 
 pub use browser::{Connection, InputEvent, PresetBrowser, View};
 pub use preview::{PreviewPanel, PreviewRenderer};
 pub use render::{lines, ConsoleRenderer, Multi, RecordingRenderer, Renderer};
+pub use theme::Theme;

@@ -42,6 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the service starts, or unplugged mid-set. Neither should end the program —
     // the display says NO PEDAL and the loop keeps going.
     let mut app = App::reconnecting(device, input(), renderers());
+    // PINEX_THEME=marquee for the big-number look; see pinex_ui::theme.
+    let theme = pinex_ui::Theme::from_env();
+    eprintln!("theme: {}", theme.name());
+    app.set_theme(theme);
 
     // The debug page is how a firmware change gets discovered, so it runs by
     // default. Port 0 or a bind failure must not stop the pedal working.
