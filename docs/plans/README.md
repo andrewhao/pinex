@@ -108,10 +108,10 @@ UI landed. What those sessions closed, and what they opened:
 
 Still open:
 
-- **Bulk preset fetches are unpaced.** Twenty back-to-back requests is what
-  wedged the pedal on 2026-08-09. Nothing has been done about it; the reconnect
-  loop copes if it happens, but not fetching that fast in the first place would
-  be better.
+- ~~**Bulk preset fetches are unpaced.**~~ — **fixed.** Each preset is requested
+  only when the previous one answers, so the pedal sets the rate. Found because
+  the Refresh button emitted all twenty-one requests at once, which is the
+  pattern that wedged it.
 - **Master volume (`0x0309`) is unimplemented.** "Global gain" is currently
   input trim, which is in the state and safe to patch. Master volume is a
   separate message documented by `Builty/TonexOneController` and never sent by

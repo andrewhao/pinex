@@ -175,11 +175,13 @@ colour order is wrong; if there is noise outside the border, the offset is.
 
 ## Two things not yet verified
 
-**The button _bindings_ have never been tested on hardware.** Every input
-registers correctly — all eight were verified, one event each, no double-fires.
-But the current mapping (← / → for slot-swap, KEY2 for paging) was written
-after that test and has only been driven through the simulator. If a button
-does something unexpected, that is the first thing to suspect.
+**The bindings above are verified on hardware.** All eight were checked press
+by press with `binding_test`, which prints the whole chain — which input fired,
+which event it became, what the browser did — and every one matches this table.
+
+They were wrong for three commits before that: left and right scrolled presets,
+KEY2 refreshed instead of paging, and KEY3 quit the process. Four tests now
+assert the table's contents, which nothing did before.
 
 **Left and right do the same thing.** Both swap the edited slot, since there
 are only two. If stepping presets with ← / → and swapping slots with ↑ / ↓
