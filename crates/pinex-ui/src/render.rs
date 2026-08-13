@@ -22,6 +22,18 @@ pub trait Renderer {
 ///
 /// Shared by the terminal renderer and the eventual SPI panel so both show the
 /// same thing, and so what the panel *would* show is assertable in a test.
+///
+/// # This is also the redraw key
+///
+/// `App::step` repaints only when these lines change, so **anything the panel
+/// draws must be represented here**. A field the panel renders but this
+/// summary ignores does not merely go unlogged — the screen stops following it
+/// altogether, while every other layer works perfectly.
+///
+/// The stomp LED shipped dead exactly this way: the pedal reported bypass, the
+/// browser stored it, `panel::draw` drew it, and the app never called `render`
+/// because the summary was byte-identical either way. `set_theme` had already
+/// had to work around the same thing by nulling `last_frame` by hand.
 pub fn lines(view: &View<'_>) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -35,10 +47,14 @@ pub fn lines(view: &View<'_>) -> Vec<String> {
         }
     }
 
+    // Bypassed belongs on the "now playing" line because it is the truth about
+    // what is being heard: the preset is still loaded, and none of it is
+    // reaching the amp.
+    let bypassed = if view.bypassed { "  BYPASSED" } else { "" };
     out.push(match (view.active, view.active_name) {
-        (Some(i), Some(name)) => format!("NOW  {:02} {name}", i + 1),
-        (Some(i), None) => format!("NOW  {:02}", i + 1),
-        (None, _) => "NOW  --".to_string(),
+        (Some(i), Some(name)) => format!("NOW  {:02} {name}{bypassed}", i + 1),
+        (Some(i), None) => format!("NOW  {:02}{bypassed}", i + 1),
+        (None, _) => format!("NOW  --{bypassed}"),
     });
 
     let marker = if Some(view.cursor) == view.active {
@@ -128,6 +144,37 @@ impl Renderer for RecordingRenderer {
 mod tests {
     use super::*;
     use crate::browser::Connection;
+
+    /// `lines` is not only what the console prints — it is the key the app
+    /// compares to decide whether to repaint the panel. Anything the panel
+    /// draws that is missing here is invisible to that comparison, so the
+    /// screen silently stops following it.
+    ///
+    /// That is exactly how the stomp LED shipped dead: the bypass state
+    /// arrived, the browser stored it, `panel::draw` drew it, and the app never
+    /// called `render` because the summary was byte-identical either way.
+    #[test]
+    fn a_change_the_panel_draws_must_change_the_frame_summary() {
+        let connected = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let engaged = crate::browser::View {
+            screen: crate::browser::Screen::Stomp,
+            stomp_mode: true,
+            bypassed: false,
+            ..crate::browser::View::stub(&connected)
+        };
+        let bypassed = crate::browser::View {
+            bypassed: true,
+            ..engaged.clone()
+        };
+
+        assert_ne!(
+            lines(&engaged),
+            lines(&bypassed),
+            "the panel draws the bypass state, so the redraw key must see it"
+        );
+    }
 
     fn view_of<'a>(
         connection: &'a Connection,

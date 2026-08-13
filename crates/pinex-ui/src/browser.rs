@@ -97,6 +97,9 @@ pub struct View<'a> {
     pub active_slot: Option<Slot>,
     /// True when the pedal is in stomp mode.
     pub stomp_mode: bool,
+    /// True when the footswitch has the pedal bypassed. Hardware-reported and
+    /// unsolicited, so the panel follows the switch rather than guessing.
+    pub bypassed: bool,
     /// Input trim in dB.
     pub gain_db: f32,
     /// Names of what each slot holds, indexed by slot.
@@ -105,8 +108,6 @@ pub struct View<'a> {
     pub slot_colors: [Option<[u8; 3]>; 3],
     /// Frame counter, driving any scrolling text.
     pub tick: u32,
-    /// Which look the panel wears.
-    pub theme: crate::theme::Theme,
 }
 
 impl<'a> View<'a> {
@@ -127,8 +128,18 @@ impl<'a> View<'a> {
     ///
     /// The app redraws on change alone otherwise, so without this a scrolling
     /// name would move once and then freeze.
+    ///
+    /// Only the Slots page shows the A/B names, and they are the only thing
+    /// that scrolls. Answering from those names on a page that does not show
+    /// them drove the app into the animation path five times a second on the
+    /// Stomp page, where [`crate::panel::draw_scroll`] has no band to redraw and
+    /// falls back to a full redraw — which starts by clearing the panel. The
+    /// result was a steady flicker showing a picture that had not changed.
     pub fn animating(&self) -> bool {
         const SLOT_COLS: usize = 11;
+        if self.screen != Screen::Slots {
+            return false;
+        }
         [Slot::A, Slot::B]
             .into_iter()
             .filter_map(|slot| {
@@ -160,11 +171,11 @@ impl<'a> View<'a> {
             slot_presets: None,
             active_slot: None,
             stomp_mode: false,
+            bypassed: false,
             gain_db: 0.0,
             slot_names: [None; 3],
             slot_colors: [None; 3],
             tick: 0,
-            theme: crate::theme::Theme::default(),
         }
     }
 }
@@ -194,9 +205,9 @@ pub struct PresetBrowser {
     slot_presets: Option<[u8; 3]>,
     active_slot: Option<Slot>,
     stomp_mode: bool,
+    bypassed: bool,
     gain_db: f32,
     tick: u32,
-    theme: crate::theme::Theme,
     /// The preset whose name we are waiting for, while walking them all.
     awaiting_preset: Option<u8>,
 }
@@ -224,6 +235,7 @@ impl PresetBrowser {
             slot_presets: self.slot_presets,
             active_slot: self.active_slot,
             stomp_mode: self.stomp_mode,
+            bypassed: self.bypassed,
             gain_db: self.gain_db,
             slot_names: [
                 self.slot_name(Slot::A),
@@ -236,13 +248,7 @@ impl PresetBrowser {
                 self.slot_color(Slot::C),
             ],
             tick: self.tick,
-            theme: self.theme,
         }
-    }
-
-    /// Choose the panel's look.
-    pub fn set_theme(&mut self, theme: crate::theme::Theme) {
-        self.theme = theme;
     }
 
     /// Advance the animation clock.
@@ -312,6 +318,7 @@ impl PresetBrowser {
                 ]);
                 self.active_slot = state.active_slot().ok();
                 self.stomp_mode = state.stomp_mode().map(|m| m == 1).unwrap_or(false);
+                self.bypassed = state.is_bypassed();
                 if let Ok(trim) = state.input_trim() {
                     self.gain_db = trim;
                 }
@@ -500,6 +507,16 @@ mod tests {
         PedalEvent::StateChanged(PedalState::from_body(raw).unwrap())
     }
 
+    /// A state carrying a bypass flag, slot C, as stomp mode reports it.
+    fn state_with_bypass(bypassed: bool) -> PedalEvent {
+        let mut raw = vec![0u8; 64];
+        let len = raw.len();
+        raw[len - pinex_proto::state::offset_from_end::CURRENT_SLOT] = Slot::C as u8;
+        raw[len - pinex_proto::state::offset_from_end::SLOT_C_PRESET] = 3;
+        raw[len - pinex_proto::state::offset_from_end::BYPASS_MODE] = u8::from(bypassed);
+        PedalEvent::StateChanged(PedalState::from_body(raw).unwrap())
+    }
+
     fn connected() -> PresetBrowser {
         let mut b = PresetBrowser::new();
         b.apply(&PedalEvent::Connected {
@@ -562,6 +579,44 @@ mod tests {
             "an out-of-turn reply started another sweep: {cmds:?}"
         );
         assert_eq!(b.name_at(7), Some("SURPRISE"), "but its name is still kept");
+    }
+
+    /// Only the Slots page shows the A/B names, so only the Slots page has
+    /// anything that scrolls.
+    ///
+    /// This reported "animating" from the A/B names whatever page was showing.
+    /// On the Stomp page that made the app call the scroll path five times a
+    /// second, and [`crate::panel::draw_scroll`] has no scrolling band there, so
+    /// it falls back to a full redraw — which begins by clearing the screen.
+    /// A full clear-and-repaint at 5 Hz is a visible flicker on the glass, and
+    /// it costs about a third of a Pi 3 core to show a picture that never
+    /// changed.
+    #[test]
+    fn only_the_page_that_shows_scrolling_names_animates() {
+        let connection = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        // Long enough that it cannot fit the slot column, so it genuinely wants
+        // to scroll wherever scrolling applies.
+        const LONG: &str = "MORNING GLORY - BRIGHT CUT 3";
+        let view_on = |screen| View {
+            screen,
+            slot_names: [Some(LONG), Some(LONG), Some(LONG)],
+            cursor_name: Some(LONG),
+            ..View::stub(&connection)
+        };
+
+        assert!(
+            view_on(Screen::Slots).animating(),
+            "the Slots page shows the A/B names, so a long one must scroll"
+        );
+        for still in [Screen::Stomp, Screen::Gain] {
+            assert!(
+                !view_on(still).animating(),
+                "{still:?} shows no A/B names, so nothing on it can scroll — \
+                 claiming otherwise repaints the whole panel five times a second"
+            );
+        }
     }
 
     #[test]
@@ -699,6 +754,25 @@ mod tests {
         let mut b = PresetBrowser::new();
         assert_eq!(b.handle(InputEvent::Select), Vec::new());
         assert!(!b.view().pending);
+    }
+
+    /// Stomping the footswitch must move the panel.
+    ///
+    /// Verified on hardware before this was written: toggling the switch in
+    /// stomp mode changes exactly one byte of the state, end-relative 12, and
+    /// the pedal announces it unsolicited. So the panel can follow the switch
+    /// without polling — which matters, because polling is what wedges this
+    /// pedal.
+    #[test]
+    fn the_bypass_state_follows_the_footswitch() {
+        let mut b = connected();
+        assert!(!b.view().bypassed, "not bypassed until the pedal says so");
+
+        b.apply(&state_with_bypass(true));
+        assert!(b.view().bypassed, "the pedal reported bypassed");
+
+        b.apply(&state_with_bypass(false));
+        assert!(!b.view().bypassed, "the pedal reported engaged again");
     }
 
     /// The pedal lights each preset a colour; the display should agree with the

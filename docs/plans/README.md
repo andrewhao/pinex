@@ -121,8 +121,10 @@ Still open:
   so far — the goal said effects settings were not needed.
 - **The full ~30 KB preset dump has never been captured**, so the 329 f32
   parameter values in each preset summary remain unmapped.
-- **The Marquee and amp-panel themes are barely tested on the glass.** Only
-  Pedalboard has had real scrutiny. Legibility at stage distance is the whole
-  point of the other two and is not something the simulator can answer.
+- ~~**The Marquee and amp-panel themes are barely tested on the glass.**~~ —
+  **closed by deletion.** Both were removed; only the Pedalboard look ships.
+  Three layouts meant three ways for a panel change to be wrong and two of them
+  were never going to be looked at, which is how the stomp-page flicker survived
+  as long as it did.
 - **No enclosure, no power plan, no boot-time trimming.** M4 in the design doc,
   still deferred.

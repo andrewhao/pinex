@@ -20,7 +20,8 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Alignment, Text};
 
-use pinex_input::hat::{HatButtons, LABELS};
+use pinex_input::hat::HatButtons;
+use pinex_input::LABELS;
 use pinex_ui::hat::HatDisplay;
 use pinex_ui::panel::WIDTH;
 

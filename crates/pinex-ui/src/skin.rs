@@ -345,6 +345,11 @@ pub struct Pedal<'a> {
     pub archetype: Archetype,
     /// Lit: this is what is playing. Unlit boxes are drawn dark.
     pub lit: bool,
+    /// Whether the box is switched *on*, which is a different question from
+    /// whether it is the one loaded. A bypassed pedal is still the loaded one;
+    /// its enclosure stays bright and only the status LED goes out, which is
+    /// what a real pedal does.
+    pub engaged: bool,
 }
 
 impl<'a> Pedal<'a> {
@@ -355,7 +360,16 @@ impl<'a> Pedal<'a> {
             color: rgb.map(from_rgb8).unwrap_or(Rgb565::CSS_DIM_GRAY),
             archetype: classify(name),
             lit,
+            // Lit boxes are assumed on unless a caller knows better. Callers
+            // with no bypass information get what they drew before.
+            engaged: lit,
         }
+    }
+
+    /// Set whether the pedal is switched on, independently of being loaded.
+    pub fn engaged(mut self, engaged: bool) -> Self {
+        self.engaged = engaged;
+        self
     }
 }
 
@@ -574,7 +588,7 @@ where
     // Status LED, with a halo when lit so it reads as emitting rather than
     // painted on.
     let led_at = Point::new(x + w / 2, y + h - 24);
-    if pedal.lit {
+    if pedal.engaged {
         Circle::with_center(led_at, 9)
             .into_styled(PrimitiveStyle::with_fill(Rgb565::new(10, 6, 0)))
             .draw(target)?;
@@ -670,183 +684,6 @@ pub fn wrap(text: &str, cols: usize) -> Vec<String> {
         lines.push(current);
     }
     lines
-}
-
-/// A chicken-head knob whose pointer angle encodes a value.
-///
-/// The angle is the information, not decoration: a player learns "the second
-/// one is at about ten o'clock" the way they do on a real amp, and can read the
-/// setting from further away than any number at this size.
-///
-/// Sweeps the usual 300 degrees, seven o'clock round to five o'clock, leaving
-/// the dead zone at the bottom where a real pot has its end stops.
-pub fn chicken_head<D>(
-    target: &mut D,
-    center: Point,
-    radius: i32,
-    fraction: f32,
-    face: Rgb565,
-    lit: bool,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    // Skirt, shaded so the knob sits proud of the panel.
-    let body = if lit {
-        Rgb565::new(4, 8, 4)
-    } else {
-        Rgb565::new(2, 4, 2)
-    };
-    // Coloured skirt: a ring of the slot's own colour, wide enough to read.
-    Circle::with_center(center, (radius * 2 + 5) as u32)
-        .into_styled(PrimitiveStyle::with_fill(darken(face, 1, 3)))
-        .draw(target)?;
-    Circle::with_center(center, (radius * 2 + 5) as u32)
-        .into_styled(PrimitiveStyle::with_stroke(face, 1))
-        .draw(target)?;
-
-    // Body, shaded, with a specular crescent up-left.
-    for row in -radius..=radius {
-        let half = ((radius * radius - row * row).max(0) as f32).sqrt() as i32;
-        if half <= 0 {
-            continue;
-        }
-        let shade = mix(
-            lighten(body, 2, 5),
-            darken(body, 1, 2),
-            (row + radius) as u32,
-            (radius * 2).max(1) as u32,
-        );
-        Line::new(
-            Point::new(center.x - half, center.y + row),
-            Point::new(center.x + half, center.y + row),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(shade, 1))
-        .draw(target)?;
-    }
-    // Specular highlight: a small filled blob up-left, not a ring. A stroked
-    // circle reads as something printed on the cap; a blob reads as light
-    // landing on it, which is the entire difference.
-    Circle::with_center(
-        Point::new(center.x - radius / 3, center.y - radius / 3),
-        (radius / 2).max(2) as u32,
-    )
-    .into_styled(PrimitiveStyle::with_fill(lighten(body, 3, 5)))
-    .draw(target)?;
-
-    // Pointer: 300 degrees of sweep starting at seven o'clock.
-    let sweep = 300.0f32.to_radians();
-    let start = 150.0f32.to_radians();
-    let angle = start + fraction.clamp(0.0, 1.0) * sweep;
-    let (sin, cos) = angle.sin_cos();
-    let tip = Point::new(
-        center.x + (sin * (radius as f32 + 2.0)) as i32,
-        center.y - (cos * (radius as f32 + 2.0)) as i32,
-    );
-    let pointer = if lit {
-        Rgb565::WHITE
-    } else {
-        Rgb565::CSS_DIM_GRAY
-    };
-    Line::new(center, tip)
-        .into_styled(PrimitiveStyle::with_stroke(pointer, 2))
-        .draw(target)?;
-    // The beak: a small blob at the tip, which is what makes it chicken-head
-    // rather than a plain line.
-    Circle::with_center(tip, 3)
-        .into_styled(PrimitiveStyle::with_fill(pointer))
-        .draw(target)?;
-    Ok(())
-}
-
-/// Tolex: a dark diagonal weave, so the background is not a flat void.
-pub fn tolex<D>(target: &mut D, area: Rectangle, tint: Rgb565) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    area.into_styled(PrimitiveStyle::with_fill(darken(tint, 4, 5)))
-        .draw(target)?;
-    let weave = darken(tint, 3, 5);
-    let height = area.size.height as i32;
-    let mut offset = -height;
-    while offset < area.size.width as i32 {
-        Line::new(
-            Point::new(area.top_left.x + offset, area.top_left.y + height),
-            Point::new(area.top_left.x + offset + height, area.top_left.y),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(weave, 1))
-        .draw(target)?;
-        offset += 6;
-    }
-    Ok(())
-}
-
-/// A jewel pilot lamp, glowing the colour it is given.
-pub fn jewel<D>(target: &mut D, center: Point, color: Rgb565, lit: bool) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    // Chrome bezel.
-    Circle::with_center(center, 13)
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(10, 20, 10)))
-        .draw(target)?;
-    Circle::with_center(center, 11)
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 4)))
-        .draw(target)?;
-
-    let glass = if lit { color } else { dim(color, 1, 5) };
-    Circle::with_center(center, 9)
-        .into_styled(PrimitiveStyle::with_fill(glass))
-        .draw(target)?;
-    if lit {
-        // Hot centre and a specular pin, which is what makes glass read as lit
-        // rather than merely coloured.
-        Circle::with_center(center, 5)
-            .into_styled(PrimitiveStyle::with_fill(lighten(glass, 2, 5)))
-            .draw(target)?;
-        Circle::with_center(Point::new(center.x - 2, center.y - 2), 3)
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-            .draw(target)?;
-    }
-    Ok(())
-}
-
-/// A brushed-metal faceplate: a vertical gradient with fine horizontal grain.
-pub fn brushed<D>(target: &mut D, area: Rectangle) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    gradient(target, area, Rgb565::new(17, 34, 17), Rgb565::new(9, 18, 9))?;
-    // Grain: every third row a shade off, which reads as brushed metal at this
-    // size where an actual fine texture would just alias into noise.
-    let mut row = area.top_left.y + 2;
-    while row < area.top_left.y + area.size.height as i32 {
-        Line::new(
-            Point::new(area.top_left.x, row),
-            Point::new(area.top_left.x + area.size.width as i32 - 1, row),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(13, 26, 13), 1))
-        .draw(target)?;
-        row += 3;
-    }
-    // Bevel top and bottom.
-    Line::new(
-        area.top_left,
-        Point::new(
-            area.top_left.x + area.size.width as i32 - 1,
-            area.top_left.y,
-        ),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(24, 48, 24), 1))
-    .draw(target)?;
-    let foot = area.top_left.y + area.size.height as i32 - 1;
-    Line::new(
-        Point::new(area.top_left.x, foot),
-        Point::new(area.top_left.x + area.size.width as i32 - 1, foot),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(3, 6, 3), 1))
-    .draw(target)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1007,6 +844,7 @@ mod tests {
                 color: red,
                 archetype: Archetype::Overdrive,
                 lit: true,
+                engaged: true,
             },
         )
         .unwrap();
@@ -1043,6 +881,7 @@ mod tests {
                     color: from_rgb8([255, 0, 0]),
                     archetype: Archetype::Overdrive,
                     lit,
+                    engaged: lit,
                 },
             )
             .unwrap();

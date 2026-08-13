@@ -21,8 +21,7 @@ use embedded_graphics::text::{Alignment, Baseline, Text};
 
 use crate::browser::{Connection, Screen, View};
 use crate::skin::{self, wrap, Pedal};
-use crate::theme::Theme;
-use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MAX_PRESETS, MIN_INPUT_TRIM_DB};
+use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MIN_INPUT_TRIM_DB};
 
 /// The HAT's panel geometry.
 pub const WIDTH: u32 = 128;
@@ -47,11 +46,7 @@ where
     match view.connection {
         Connection::Disconnected => draw_no_pedal(target),
         Connection::Connected { firmware } => match view.screen {
-            Screen::Slots => match view.theme {
-                Theme::Pedalboard => draw_slots(target, view),
-                Theme::Marquee => draw_slots_marquee(target, view),
-                Theme::AmpPanel => draw_slots_amp(target, view),
-            },
+            Screen::Slots => draw_slots(target, view),
             Screen::Stomp => draw_stomp(target, view),
             Screen::Gain => draw_gain(target, view, firmware),
         },
@@ -165,193 +160,6 @@ where
         .draw(target)?;
     }
     Ok(())
-}
-
-/// The amp-panel treatment of the A/B page.
-///
-/// Tolex ground, a brushed faceplate across the middle, and one chicken-head
-/// knob per slot whose **pointer angle is the preset number**. That is the idea
-/// worth having: a number at this size has to be read, but an angle is
-/// recognised, and a player already knows how to read a knob at a glance from
-/// four paces. The jewel lamp above shows the colour of whatever is playing.
-fn draw_slots_amp<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    // Cabinet.
-    skin::tolex(
-        target,
-        Rectangle::new(Point::zero(), Size::new(WIDTH, HEIGHT)),
-        Rgb565::new(6, 10, 5),
-    )?;
-
-    // Faceplate: a brushed metal strip the controls sit on.
-    let plate = Rectangle::new(Point::new(0, 26), Size::new(WIDTH, 62));
-    skin::brushed(target, plate)?;
-
-    draw_header(target, view)?;
-
-    // Pilot lamp, centred above the plate, lit in the playing preset's colour.
-    let playing_color = view
-        .active_slot
-        .and_then(|slot| view.slot_color_for(slot))
-        .map(skin::from_rgb8)
-        .unwrap_or(DIM);
-    skin::jewel(
-        target,
-        Point::new(WIDTH as i32 / 2, 15),
-        playing_color,
-        view.active_slot.is_some(),
-    )?;
-
-    for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
-        let x = 32 + index as i32 * 64;
-        let playing = view.active_slot == Some(slot);
-        let editing = view.selected == slot;
-        let preset = if editing {
-            Some(view.cursor)
-        } else {
-            view.slot_preset(slot)
-        };
-
-        // Angle carries the value; the number underneath is the confirmation.
-        let fraction = preset
-            .map(|p| p as f32 / (MAX_PRESETS - 1) as f32)
-            .unwrap_or(0.0);
-        // The knob skirt takes the slot's own colour, so A and B stay
-        // distinguishable even when neither is playing.
-        let face = if editing {
-            view.cursor_color
-        } else {
-            view.slot_color_for(slot)
-        }
-        .map(skin::from_rgb8)
-        .unwrap_or(DIM);
-        skin::chicken_head(target, Point::new(x, 52), 13, fraction, face, playing)?;
-
-        // Engraved legend: slot letter above, number below.
-        // On a light faceplate, DIM is grey on grey. Engraved legends are dark.
-        Text::with_alignment(
-            slot_letter(slot),
-            Point::new(x, 34),
-            MonoTextStyle::new(
-                &FONT_6X10,
-                if playing {
-                    PLAYING
-                } else {
-                    Rgb565::new(2, 4, 2)
-                },
-            ),
-            Alignment::Center,
-        )
-        .draw(target)?;
-
-        let number = match preset {
-            Some(preset) => format!("{:02}", preset + 1),
-            None => "--".to_string(),
-        };
-        Text::with_alignment(
-            &number,
-            Point::new(x, 84),
-            MonoTextStyle::new(&FONT_9X15_BOLD, if playing { PLAYING } else { TEXT }),
-            Alignment::Center,
-        )
-        .draw(target)?;
-
-        if editing {
-            Rectangle::new(Point::new(x - 28, 87), Size::new(56, 2))
-                .into_styled(PrimitiveStyle::with_fill(WARN))
-                .draw(target)?;
-        }
-    }
-
-    draw_slot_names(target, view)
-}
-
-/// The Marquee treatment of the A/B page.
-///
-/// Numbers at 10x20 — the largest the panel carries — over a bold colour spine
-/// per slot. No artwork: at four paces the box detail is mush anyway, and what
-/// survives is the number and the colour. The playing slot gets a filled spine
-/// and its number in green; the other is outlined.
-fn draw_slots_marquee<D>(target: &mut D, view: &View<'_>) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    draw_header(target, view)?;
-
-    for (index, slot) in [Slot::A, Slot::B].into_iter().enumerate() {
-        let x = index as i32 * 64;
-        let playing = view.active_slot == Some(slot);
-        let editing = view.selected == slot;
-        let preset = if editing {
-            Some(view.cursor)
-        } else {
-            view.slot_preset(slot)
-        };
-        let rgb = if editing {
-            view.cursor_color
-        } else {
-            view.slot_color_for(slot)
-        };
-        let color = rgb.map(skin::from_rgb8).unwrap_or(DIM);
-
-        // Colour spine: filled when playing, a bar when not. This is the part
-        // that reads first from a distance.
-        let spine = Rectangle::new(Point::new(x + 4, 24), Size::new(56, 62));
-        if playing {
-            spine
-                .into_styled(PrimitiveStyle::with_fill(skin::dim(color, 1, 3)))
-                .draw(target)?;
-            Rectangle::new(Point::new(x + 4, 24), Size::new(56, 5))
-                .into_styled(PrimitiveStyle::with_fill(color))
-                .draw(target)?;
-        } else {
-            Rectangle::new(Point::new(x + 4, 24), Size::new(56, 5))
-                .into_styled(PrimitiveStyle::with_fill(skin::dim(color, 1, 2)))
-                .draw(target)?;
-        }
-
-        // Slot letter, small, above the number.
-        Text::with_alignment(
-            slot_letter(slot),
-            Point::new(x + 32, 40),
-            MonoTextStyle::new(&FONT_6X10, if playing { PLAYING } else { DIM }),
-            Alignment::Center,
-        )
-        .draw(target)?;
-
-        // The number, as big as the panel allows.
-        let text = match preset {
-            Some(preset) => format!("{:02}", preset + 1),
-            None => "--".to_string(),
-        };
-        Text::with_alignment(
-            &text,
-            Point::new(x + 32, 68),
-            MonoTextStyle::new(&FONT_10X20, if playing { PLAYING } else { TEXT }),
-            Alignment::Center,
-        )
-        .draw(target)?;
-
-        if editing {
-            Rectangle::new(Point::new(x + 4, 88), Size::new(56, 2))
-                .into_styled(PrimitiveStyle::with_fill(WARN))
-                .draw(target)?;
-        }
-    }
-
-    if view.active_slot == Some(view.selected) {
-        Text::with_alignment(
-            "LIVE",
-            Point::new(WIDTH as i32 / 2, 20),
-            MonoTextStyle::new(&FONT_6X10, WARN),
-            Alignment::Center,
-        )
-        .draw(target)?;
-    }
-
-    draw_slot_names(target, view)
 }
 
 /// The two footswitch slots, side by side.
@@ -490,11 +298,16 @@ where
     let showing_loaded = loaded == Some(view.cursor);
     let name = view.cursor_name.unwrap_or("...");
 
+    // The status LED follows the footswitch, but only on the box that is
+    // actually running. A preset you are merely browsing is not switched on,
+    // and lighting it would claim a sound nobody is hearing.
+    let engaged = showing_loaded && !view.bypassed;
+
     let area = Rectangle::new(Point::new(24, 16), Size::new(80, 76));
     skin::draw(
         target,
         area,
-        &Pedal::new(name, view.cursor_color, showing_loaded),
+        &Pedal::new(name, view.cursor_color, showing_loaded).engaged(engaged),
     )?;
 
     Text::with_alignment(
@@ -504,6 +317,19 @@ where
         Alignment::Center,
     )
     .draw(target)?;
+
+    // A dark LED alone is ambiguous — it also means "you are browsing
+    // elsewhere". Saying BYPASS in words is what makes a wrong reading
+    // obvious instead of quietly plausible.
+    if view.bypassed && showing_loaded {
+        Text::with_alignment(
+            "BYPASS",
+            Point::new(WIDTH as i32 / 2, 12),
+            MonoTextStyle::new(&FONT_6X10, WARN),
+            Alignment::Center,
+        )
+        .draw(target)?;
+    }
 
     let preview = view.cursor_name.map(skin::short_name);
     draw_wrapped(target, preview, 118, 2, TEXT)?;
@@ -613,7 +439,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
 
     /// An in-memory panel, so drawing is testable with no hardware and no extra
     /// dependency. Records every pixel written.
@@ -771,58 +596,65 @@ mod tests {
         assert!(left && right, "both slots must be visible");
     }
 
-    /// The knob angle carries the preset, so it must actually move with it —
-    /// a knob that looks the same at 01 and 20 is decoration, not a control.
+    /// Stomping the footswitch must visibly change the stomp page.
+    ///
+    /// The pedal reports bypass unsolicited, so the panel can follow the switch
+    /// exactly. Asserting the drawn pixels differ, rather than that a flag was
+    /// copied, is the point: a status light that does not light is decoration.
     #[test]
-    fn the_amp_panel_knob_angle_tracks_the_preset() {
+    fn the_stomp_page_shows_whether_the_pedal_is_engaged() {
         let c = Connection::Connected {
             firmware: "1.3.17".into(),
         };
-        let render = |cursor: u8| {
+        let render = |bypassed: bool| {
             let mut panel = Buffer::new();
             let view = View {
-                theme: Theme::AmpPanel,
-                cursor,
-                cursor_name: Some("TF TILT - 1 ADV"),
+                screen: Screen::Stomp,
+                bypassed,
+                cursor: 3,
+                cursor_name: Some("TF PROTEIN - BLUE 1"),
                 cursor_color: Some([255, 63, 0]),
-                slot_presets: Some([cursor, 1, 2]),
-                active_slot: Some(Slot::A),
-                slot_names: [Some("TF TILT - 1 ADV"), Some("TF PROTEIN - BLUE 1"), None],
-                slot_colors: [Some([255, 63, 0]), Some([47, 0, 255]), None],
+                // The cursor is on what slot C actually holds, so this box is
+                // the one running — the case where the LED means something.
+                slot_presets: Some([0, 1, 3]),
+                active_slot: Some(Slot::C),
+                stomp_mode: true,
                 ..View::stub(&c)
             };
             draw(&mut panel, &view).unwrap();
             panel.pixels
         };
 
-        let low = render(0);
-        let mid = render(9);
-        let high = render(19);
-        assert_ne!(low, mid, "the knob must move between preset 1 and 10");
-        assert_ne!(mid, high, "the knob must move between preset 10 and 20");
-        assert_ne!(low, high, "the knob must move between preset 1 and 20");
+        // Compared as a count rather than with assert_ne!, which would dump
+        // sixteen thousand pixels into the failure output.
+        let engaged = render(false);
+        let bypassed = render(true);
+        let differing = engaged
+            .iter()
+            .zip(bypassed.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            differing > 0,
+            "engaged and bypassed drew an identical panel"
+        );
     }
 
-    /// Every theme must render every page without panicking or drawing nothing.
+    /// Every page must render something rather than panicking or drawing an
+    /// empty panel. A blank screen mid-set is indistinguishable from a dead one.
     #[test]
-    fn all_themes_render_all_pages() {
+    fn every_page_renders_something() {
         let c = Connection::Connected {
             firmware: "1.3.17".into(),
         };
-        for theme in [Theme::Pedalboard, Theme::Marquee, Theme::AmpPanel] {
-            for screen in [Screen::Slots, Screen::Stomp, Screen::Gain] {
-                let mut panel = Buffer::new();
-                let view = View {
-                    theme,
-                    screen,
-                    ..slots_view(&c, Slot::A)
-                };
-                draw(&mut panel, &view).unwrap();
-                assert!(
-                    panel.lit() > 0,
-                    "{theme:?} on {screen:?} drew an empty panel"
-                );
-            }
+        for screen in [Screen::Slots, Screen::Stomp, Screen::Gain] {
+            let mut panel = Buffer::new();
+            let view = View {
+                screen,
+                ..slots_view(&c, Slot::A)
+            };
+            draw(&mut panel, &view).unwrap();
+            assert!(panel.lit() > 0, "{screen:?} drew an empty panel");
         }
     }
 

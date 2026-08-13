@@ -206,6 +206,22 @@ impl PedalState {
         self.raw[self.index_from_end(offset_from_end::BYPASS_MODE)]
     }
 
+    /// Whether the pedal is currently bypassed — the footswitch, not a setting.
+    ///
+    /// **Verified on hardware** (1.3.17, `probe_bypass`): stomping the switch in
+    /// stomp mode changes exactly one byte, end-relative 12, toggling `0x01` and
+    /// `0x00`, with every other byte identical. The pedal sends the new state
+    /// unsolicited, so a display can follow the switch without polling — which
+    /// matters, because sustained polling is what leaves this pedal silent.
+    ///
+    /// The name was transcribed from `protocol.md` long before any of that was
+    /// checked, and "bypass mode" reads just as easily as a setting (true versus
+    /// buffered bypass) as it does "bypassed right now". It is the latter, and
+    /// the polarity is confirmed on the glass: `1` is bypassed.
+    pub fn is_bypassed(&self) -> bool {
+        self.bypass_mode() == 1
+    }
+
     /// Index of the `0xBA` colour array, the anchor for the fields around it.
     ///
     /// The three literals immediately before the array are, in order, stomp
