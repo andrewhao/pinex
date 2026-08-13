@@ -1,4 +1,4 @@
-//! Write each theme's A/B page as a PPM, for looking at properly.
+//! Write each page as a PPM, for looking at properly.
 //!
 //! `cargo run -p pinex-ui --example screenshot -- /tmp/out`
 //!
@@ -10,7 +10,7 @@ use std::io::Write;
 use embedded_graphics::pixelcolor::RgbColor;
 use pinex_proto::state::Slot;
 use pinex_ui::browser::{Connection, Screen, View};
-use pinex_ui::{panel, PreviewPanel, Theme};
+use pinex_ui::{panel, PreviewPanel};
 
 const SCALE: usize = 4;
 
@@ -22,10 +22,13 @@ fn main() -> std::io::Result<()> {
         firmware: "1.3.17".into(),
     };
 
-    for theme in [Theme::AmpPanel, Theme::Pedalboard, Theme::Marquee] {
+    for (name, screen) in [
+        ("ab", Screen::Slots),
+        ("stomp", Screen::Stomp),
+        ("gain", Screen::Gain),
+    ] {
         let view = View {
-            theme,
-            screen: Screen::Slots,
+            screen,
             cursor: 4,
             cursor_name: Some("TF PROTEIN - BLUE 1"),
             cursor_color: Some([47, 0, 255]),
@@ -46,7 +49,7 @@ fn main() -> std::io::Result<()> {
         let mut buffer = PreviewPanel::new();
         panel::draw(&mut buffer, &view).unwrap();
 
-        let path = format!("{out}-{}.ppm", theme.name());
+        let path = format!("{out}-{name}.ppm");
         let mut file = std::fs::File::create(&path)?;
         let (w, h) = (panel::WIDTH as usize, panel::HEIGHT as usize);
         write!(file, "P6\n{} {}\n255\n", w * SCALE, h * SCALE)?;

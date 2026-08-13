@@ -117,25 +117,15 @@ Preset names scroll back and forth under each slot when too long to fit. Names
 that already fit do not move — motion on a stage display is a cost, and paying
 it for a name that fits is a distraction.
 
-## Themes
+## The look
 
-Three looks, switched without rebuilding:
+One: moulded stompboxes, with the enclosure tinted the colour the pedal itself
+lights for that preset. There is nothing to switch and no `PINEX_THEME`.
 
-```sh
-systemctl --user set-environment PINEX_THEME=amp          # amp control panel
-systemctl --user set-environment PINEX_THEME=pedalboard   # moulded stompboxes
-systemctl --user set-environment PINEX_THEME=marquee      # big numbers
-systemctl --user restart pinex
-```
-
-`set-environment` survives a service restart but not a reboot; to make it
-permanent, add `Environment=PINEX_THEME=amp` to
-`~/.config/systemd/user/pinex.service`.
-
-On the **amp panel**, the knob's pointer angle *is* the preset number — 1 at
-seven o'clock through 20 at five o'clock, the usual 300 degrees of sweep. A
-number has to be read; an angle is recognised, which is the point. The knob
-skirt takes each slot's colour.
+Two alternatives were built — an amp control panel whose knob angle encoded the
+preset, and a big-number marquee — and both were removed. Carrying three
+layouts meant three ways for every panel change to be wrong, and only one of
+them was ever going to be used. Git has them if the question reopens.
 
 ## The debug page
 

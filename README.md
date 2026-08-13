@@ -18,8 +18,6 @@ loaded, and choosing what is loaded next.
 - **Global gain** — input trim, applied as you turn it
 - **Generated pedal artwork** — the archetype is inferred from the preset name,
   and the enclosure takes the colour the pedal itself lights for that preset
-- **Three themes** — `pedalboard` (moulded stompboxes), `amp` (a control panel
-  where the knob angle *is* the preset), `marquee` (big numbers)
 - **A debug web page** on port 8080: connection, firmware, every preset name
   and colour, and recent frames with raw hex
 
@@ -60,7 +58,7 @@ udev rule and service. See [`deploy/README.md`](deploy/README.md).
 |---|---|---|
 | `pinex-proto` | Frame codec, CRC, tagged values, pedal state | none — pure, fixture-tested |
 | `pinex-device` | tty transport, reader thread, event bus, PTY simulator | tty only |
-| `pinex-ui` | Browser state machine, panel drawing, themes, ST7735S driver | driver behind `--features hat` |
+| `pinex-ui` | Browser state machine, panel drawing, ST7735S driver | driver behind `--features hat` |
 | `pinex-input` | Input trait, keyboard, HAT buttons | buttons behind `--features hat` |
 | `pinex-web` | Debug page | none |
 | `pinex` | The binary and the app loop | wiring |

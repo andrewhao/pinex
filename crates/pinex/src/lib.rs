@@ -74,13 +74,6 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         }
     }
 
-    /// Choose the panel's look.
-    pub fn set_theme(&mut self, theme: pinex_ui::Theme) {
-        self.browser.set_theme(theme);
-        // Force a redraw: the frame summary does not mention the theme.
-        self.last_frame = None;
-    }
-
     /// The snapshot the debug page renders. Hand this to `DebugServer::start`.
     pub fn snapshot(&self) -> Arc<Mutex<Snapshot>> {
         Arc::clone(&self.snapshot)
