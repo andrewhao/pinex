@@ -345,6 +345,11 @@ pub struct Pedal<'a> {
     pub archetype: Archetype,
     /// Lit: this is what is playing. Unlit boxes are drawn dark.
     pub lit: bool,
+    /// Whether the box is switched *on*, which is a different question from
+    /// whether it is the one loaded. A bypassed pedal is still the loaded one;
+    /// its enclosure stays bright and only the status LED goes out, which is
+    /// what a real pedal does.
+    pub engaged: bool,
 }
 
 impl<'a> Pedal<'a> {
@@ -355,7 +360,16 @@ impl<'a> Pedal<'a> {
             color: rgb.map(from_rgb8).unwrap_or(Rgb565::CSS_DIM_GRAY),
             archetype: classify(name),
             lit,
+            // Lit boxes are assumed on unless a caller knows better. Callers
+            // with no bypass information get what they drew before.
+            engaged: lit,
         }
+    }
+
+    /// Set whether the pedal is switched on, independently of being loaded.
+    pub fn engaged(mut self, engaged: bool) -> Self {
+        self.engaged = engaged;
+        self
     }
 }
 
@@ -574,7 +588,7 @@ where
     // Status LED, with a halo when lit so it reads as emitting rather than
     // painted on.
     let led_at = Point::new(x + w / 2, y + h - 24);
-    if pedal.lit {
+    if pedal.engaged {
         Circle::with_center(led_at, 9)
             .into_styled(PrimitiveStyle::with_fill(Rgb565::new(10, 6, 0)))
             .draw(target)?;
@@ -830,6 +844,7 @@ mod tests {
                 color: red,
                 archetype: Archetype::Overdrive,
                 lit: true,
+                engaged: true,
             },
         )
         .unwrap();
@@ -866,6 +881,7 @@ mod tests {
                     color: from_rgb8([255, 0, 0]),
                     archetype: Archetype::Overdrive,
                     lit,
+                    engaged: lit,
                 },
             )
             .unwrap();

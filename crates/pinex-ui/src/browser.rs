@@ -97,6 +97,9 @@ pub struct View<'a> {
     pub active_slot: Option<Slot>,
     /// True when the pedal is in stomp mode.
     pub stomp_mode: bool,
+    /// True when the footswitch has the pedal bypassed. Hardware-reported and
+    /// unsolicited, so the panel follows the switch rather than guessing.
+    pub bypassed: bool,
     /// Input trim in dB.
     pub gain_db: f32,
     /// Names of what each slot holds, indexed by slot.
@@ -168,6 +171,7 @@ impl<'a> View<'a> {
             slot_presets: None,
             active_slot: None,
             stomp_mode: false,
+            bypassed: false,
             gain_db: 0.0,
             slot_names: [None; 3],
             slot_colors: [None; 3],
@@ -201,6 +205,7 @@ pub struct PresetBrowser {
     slot_presets: Option<[u8; 3]>,
     active_slot: Option<Slot>,
     stomp_mode: bool,
+    bypassed: bool,
     gain_db: f32,
     tick: u32,
     /// The preset whose name we are waiting for, while walking them all.
@@ -230,6 +235,7 @@ impl PresetBrowser {
             slot_presets: self.slot_presets,
             active_slot: self.active_slot,
             stomp_mode: self.stomp_mode,
+            bypassed: self.bypassed,
             gain_db: self.gain_db,
             slot_names: [
                 self.slot_name(Slot::A),
@@ -312,6 +318,7 @@ impl PresetBrowser {
                 ]);
                 self.active_slot = state.active_slot().ok();
                 self.stomp_mode = state.stomp_mode().map(|m| m == 1).unwrap_or(false);
+                self.bypassed = state.is_bypassed();
                 if let Ok(trim) = state.input_trim() {
                     self.gain_db = trim;
                 }
@@ -497,6 +504,16 @@ mod tests {
         let len = raw.len();
         raw[len - pinex_proto::state::offset_from_end::CURRENT_SLOT] = Slot::A as u8;
         raw[len - pinex_proto::state::offset_from_end::SLOT_A_PRESET] = preset;
+        PedalEvent::StateChanged(PedalState::from_body(raw).unwrap())
+    }
+
+    /// A state carrying a bypass flag, slot C, as stomp mode reports it.
+    fn state_with_bypass(bypassed: bool) -> PedalEvent {
+        let mut raw = vec![0u8; 64];
+        let len = raw.len();
+        raw[len - pinex_proto::state::offset_from_end::CURRENT_SLOT] = Slot::C as u8;
+        raw[len - pinex_proto::state::offset_from_end::SLOT_C_PRESET] = 3;
+        raw[len - pinex_proto::state::offset_from_end::BYPASS_MODE] = u8::from(bypassed);
         PedalEvent::StateChanged(PedalState::from_body(raw).unwrap())
     }
 
@@ -737,6 +754,25 @@ mod tests {
         let mut b = PresetBrowser::new();
         assert_eq!(b.handle(InputEvent::Select), Vec::new());
         assert!(!b.view().pending);
+    }
+
+    /// Stomping the footswitch must move the panel.
+    ///
+    /// Verified on hardware before this was written: toggling the switch in
+    /// stomp mode changes exactly one byte of the state, end-relative 12, and
+    /// the pedal announces it unsolicited. So the panel can follow the switch
+    /// without polling — which matters, because polling is what wedges this
+    /// pedal.
+    #[test]
+    fn the_bypass_state_follows_the_footswitch() {
+        let mut b = connected();
+        assert!(!b.view().bypassed, "not bypassed until the pedal says so");
+
+        b.apply(&state_with_bypass(true));
+        assert!(b.view().bypassed, "the pedal reported bypassed");
+
+        b.apply(&state_with_bypass(false));
+        assert!(!b.view().bypassed, "the pedal reported engaged again");
     }
 
     /// The pedal lights each preset a colour; the display should agree with the

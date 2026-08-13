@@ -298,11 +298,16 @@ where
     let showing_loaded = loaded == Some(view.cursor);
     let name = view.cursor_name.unwrap_or("...");
 
+    // The status LED follows the footswitch, but only on the box that is
+    // actually running. A preset you are merely browsing is not switched on,
+    // and lighting it would claim a sound nobody is hearing.
+    let engaged = showing_loaded && !view.bypassed;
+
     let area = Rectangle::new(Point::new(24, 16), Size::new(80, 76));
     skin::draw(
         target,
         area,
-        &Pedal::new(name, view.cursor_color, showing_loaded),
+        &Pedal::new(name, view.cursor_color, showing_loaded).engaged(engaged),
     )?;
 
     Text::with_alignment(
@@ -312,6 +317,19 @@ where
         Alignment::Center,
     )
     .draw(target)?;
+
+    // A dark LED alone is ambiguous — it also means "you are browsing
+    // elsewhere". Saying BYPASS in words is what makes a wrong reading
+    // obvious instead of quietly plausible.
+    if view.bypassed && showing_loaded {
+        Text::with_alignment(
+            "BYPASS",
+            Point::new(WIDTH as i32 / 2, 12),
+            MonoTextStyle::new(&FONT_6X10, WARN),
+            Alignment::Center,
+        )
+        .draw(target)?;
+    }
 
     let preview = view.cursor_name.map(skin::short_name);
     draw_wrapped(target, preview, 118, 2, TEXT)?;
@@ -576,6 +594,50 @@ mod tests {
         let left = (0..64).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         let right = (64..WIDTH).any(|x| (0..HEIGHT).any(|y| panel.pixel_at(x, y) != Rgb565::BLACK));
         assert!(left && right, "both slots must be visible");
+    }
+
+    /// Stomping the footswitch must visibly change the stomp page.
+    ///
+    /// The pedal reports bypass unsolicited, so the panel can follow the switch
+    /// exactly. Asserting the drawn pixels differ, rather than that a flag was
+    /// copied, is the point: a status light that does not light is decoration.
+    #[test]
+    fn the_stomp_page_shows_whether_the_pedal_is_engaged() {
+        let c = Connection::Connected {
+            firmware: "1.3.17".into(),
+        };
+        let render = |bypassed: bool| {
+            let mut panel = Buffer::new();
+            let view = View {
+                screen: Screen::Stomp,
+                bypassed,
+                cursor: 3,
+                cursor_name: Some("TF PROTEIN - BLUE 1"),
+                cursor_color: Some([255, 63, 0]),
+                // The cursor is on what slot C actually holds, so this box is
+                // the one running — the case where the LED means something.
+                slot_presets: Some([0, 1, 3]),
+                active_slot: Some(Slot::C),
+                stomp_mode: true,
+                ..View::stub(&c)
+            };
+            draw(&mut panel, &view).unwrap();
+            panel.pixels
+        };
+
+        // Compared as a count rather than with assert_ne!, which would dump
+        // sixteen thousand pixels into the failure output.
+        let engaged = render(false);
+        let bypassed = render(true);
+        let differing = engaged
+            .iter()
+            .zip(bypassed.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            differing > 0,
+            "engaged and bypassed drew an identical panel"
+        );
     }
 
     /// Every page must render something rather than panicking or drawing an

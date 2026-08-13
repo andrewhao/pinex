@@ -88,6 +88,21 @@ box, no A/B.
 
 The number turns green when what you are looking at is what is playing.
 
+### The footswitch
+
+Stomping the pedal's own footswitch is reflected on the panel. The status LED
+on the drawn box goes dark and **BYPASS** appears at the top when the pedal is
+bypassed; the LED lights again when you switch it back on.
+
+The enclosure stays bright either way, because a bypassed pedal is still the
+loaded one — only the light goes out, as on a real pedal. The LED lights only
+while you are looking at the preset slot C actually holds: one you are merely
+browsing is not switched on, and lighting it would claim a sound nobody is
+hearing.
+
+The pedal announces this itself, so the panel follows the switch without asking
+it anything.
+
 ## Setting the gain
 
 1. **KEY2** until the page reads **GAIN**.
