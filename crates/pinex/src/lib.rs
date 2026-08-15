@@ -47,8 +47,12 @@ pub struct App<I: InputSource, R: Renderer> {
     /// The pedal's own most recent state. Every write starts from these bytes;
     /// without one we cannot safely build a preset change, so we decline to try.
     last_state: Option<PedalState>,
-    /// The last frame handed to the renderer, so identical ones are skipped.
-    last_frame: Option<Vec<String>>,
+    /// What the panel was last drawn from, so an unchanged picture is skipped.
+    ///
+    /// A [`pinex_ui::RenderKey`] rather than the text summary: the summary
+    /// omitted fields the panel drew, and each omission silently froze that
+    /// part of the display. See its docs.
+    last_key: Option<pinex_ui::RenderKey>,
     /// Loop iterations, for pacing the animation clock.
     steps: u32,
     /// Reported rather than swallowed, and surfaced on the display.
@@ -67,7 +71,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             renderer,
             browser: PresetBrowser::new(),
             last_state: None,
-            last_frame: None,
+            last_key: None,
             steps: 0,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
@@ -92,7 +96,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             renderer,
             browser: PresetBrowser::new(),
             last_state: None,
-            last_frame: None,
+            last_key: None,
             steps: 0,
             errors: Vec::new(),
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
@@ -182,14 +186,14 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         // line every 50 ms forever.
         {
             let view = self.browser.view();
-            let frame = pinex_ui::lines(&view);
-            let changed = self.last_frame.as_ref() != Some(&frame);
+            let key = pinex_ui::RenderKey::of(&view);
+            let changed = self.last_key.as_ref() != Some(&key);
             // Scrolling redraws on the animation clock, not on every loop tick:
             // the text only moves when the tick advances, so redrawing between
             // frames repaints an identical picture.
             if changed {
                 self.renderer.render(&view);
-                self.last_frame = Some(frame);
+                self.last_key = Some(key);
             } else if animation_frame && view.animating() {
                 // Only the name band moves, so only redraw that.
                 self.renderer.render_scroll(&view);
@@ -215,6 +219,7 @@ impl<I: InputSource, R: Renderer> App<I, R> {
         snapshot.active_preset = view.active;
         snapshot.active_name = view.active_name.map(str::to_string);
         snapshot.cursor = view.cursor;
+        snapshot.master_volume_db = view.master_volume_db;
         snapshot.names = (0..pinex_proto::state::MAX_PRESETS)
             .map(|i| self.browser.name_at(i).map(str::to_string))
             .collect();
@@ -295,6 +300,14 @@ impl<I: InputSource, R: Renderer> App<I, R> {
                 raw_hex: String::new(),
                 is_error: false,
             },
+            PedalEvent::ParamChanged(change) => FrameRecord {
+                summary: format!(
+                    "Parameter {} = {:.2} raw ({:.1} dB)",
+                    change.index, change.raw, change.db
+                ),
+                raw_hex: String::new(),
+                is_error: false,
+            },
             PedalEvent::WriteAcknowledged => FrameRecord {
                 summary: "write acknowledged (not yet confirmed)".into(),
                 raw_hex: String::new(),
@@ -354,6 +367,16 @@ impl<I: InputSource, R: Renderer> App<I, R> {
             Command::SetGain(db) => Self::edit(pedal, &self.last_state, "set gain", move |state| {
                 state.set_input_trim(db).map(|offsets| offsets.to_vec())
             }),
+            // Not an `edit`: master volume is not in the state, so there is no
+            // snapshot to patch and no diff to assert against. The pedal's own
+            // report is what confirms it.
+            Command::SetMasterVolume(db) => {
+                pedal.set_master_volume(db).map_err(|e| e.to_string())?;
+                pedal.request_master_volume().map_err(|e| e.to_string())
+            }
+            Command::RequestMasterVolume => {
+                pedal.request_master_volume().map_err(|e| e.to_string())
+            }
         }
     }
 
