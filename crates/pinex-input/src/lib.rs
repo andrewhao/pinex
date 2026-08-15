@@ -24,20 +24,32 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 /// What the player did.
+///
+/// # Directions, not meanings
+///
+/// The four joystick directions are reported as directions and interpreted by
+/// the page being shown, because the axes genuinely mean different things:
+/// slots A and B sit **side by side**, so left and right choose between them,
+/// while the preset list runs **vertically**; on the Levels page the rows stack
+/// vertically and their bars run horizontally, so the axes are the other way up.
+///
+/// They were once `Prev`/`Next`/`Mode`, with left and right *both* mapped to
+/// `Mode` because the secondary axis was only ever a toggle. That put meaning
+/// in the hardware table, where it could not vary by page — and made "left and
+/// right move the value" impossible to express, since the two were
+/// indistinguishable by the time the browser saw them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Move the browsing cursor forward, wrapping.
-    Next,
-    /// Move the browsing cursor back, wrapping.
-    Prev,
+    Up,
+    Down,
+    Left,
+    Right,
     /// Ask the pedal to load whatever the cursor is on.
     Select,
     /// Re-sync everything from the pedal.
     Refresh,
     /// Change page.
     Page,
-    /// Switch which slot is being edited, or which mode the pedal is in.
-    Mode,
     /// Shut down cleanly.
     Quit,
 }
@@ -47,12 +59,14 @@ impl InputEvent {
     /// a stray keypress is ignored rather than acted on.
     pub fn from_key(key: &str) -> Option<Self> {
         match key.trim().to_ascii_lowercase().as_str() {
-            "n" | "j" | "" => Some(Self::Next),
-            "p" | "k" => Some(Self::Prev),
+            // vim directions, plus the older n/p aliases for the vertical axis.
+            "j" | "n" | "" => Some(Self::Down),
+            "k" | "p" => Some(Self::Up),
+            "h" => Some(Self::Left),
+            "l" => Some(Self::Right),
             "s" | "enter" => Some(Self::Select),
             "r" => Some(Self::Refresh),
             "t" => Some(Self::Page),
-            "m" | " " => Some(Self::Mode),
             "q" => Some(Self::Quit),
             _ => None,
         }
@@ -78,12 +92,12 @@ pub const LABELS: [&str; 8] = [
 /// a small version of exactly the failure that made this table wrong: the same
 /// fact written down twice, and only one copy maintained.
 pub const BINDINGS: [InputEvent; 8] = [
-    // Up/down steps the value; left/right swaps which slot is being edited,
-    // which is the pair of gestures A/B management needs.
-    InputEvent::Prev,
-    InputEvent::Next,
-    InputEvent::Mode,
-    InputEvent::Mode,
+    // The joystick reports where it was pushed and nothing more. What a
+    // direction *does* belongs to the page being shown — see `InputEvent`.
+    InputEvent::Up,
+    InputEvent::Down,
+    InputEvent::Left,
+    InputEvent::Right,
     InputEvent::Select,
     InputEvent::Select,
     InputEvent::Page,
@@ -262,10 +276,10 @@ mod tests {
     /// If you change a binding, change the manual in the same commit and this
     /// test will hold you to it.
     const DOCUMENTED: [InputEvent; 8] = [
-        InputEvent::Prev,
-        InputEvent::Next,
-        InputEvent::Mode,
-        InputEvent::Mode,
+        InputEvent::Up,
+        InputEvent::Down,
+        InputEvent::Left,
+        InputEvent::Right,
         InputEvent::Select,
         InputEvent::Select,
         InputEvent::Page,
@@ -304,7 +318,12 @@ mod tests {
     /// unreachable for three commits because nothing was bound to Page.
     #[test]
     fn paging_and_slot_switching_are_both_reachable() {
-        for required in [InputEvent::Page, InputEvent::Mode, InputEvent::Select] {
+        for required in [
+            InputEvent::Page,
+            InputEvent::Left,
+            InputEvent::Right,
+            InputEvent::Select,
+        ] {
             assert!(
                 BINDINGS.contains(&required),
                 "{required:?} is not bound to any button, so it cannot be done \
@@ -315,10 +334,10 @@ mod tests {
 
     #[test]
     fn scripted_input_replays_in_order_then_reports_nothing() {
-        let mut input = ScriptedInput::new([InputEvent::Next, InputEvent::Select]);
+        let mut input = ScriptedInput::new([InputEvent::Down, InputEvent::Select]);
         let t = Duration::from_millis(1);
 
-        assert_eq!(input.poll(t), Some(InputEvent::Next));
+        assert_eq!(input.poll(t), Some(InputEvent::Down));
         assert_eq!(input.poll(t), Some(InputEvent::Select));
         assert_eq!(input.poll(t), None);
         assert!(input.is_empty());
@@ -328,11 +347,11 @@ mod tests {
     /// A scripted source that slept on every event would make tests crawl.
     #[test]
     fn only_an_empty_queue_waits_out_the_timeout() {
-        let mut input = ScriptedInput::new([InputEvent::Next]);
+        let mut input = ScriptedInput::new([InputEvent::Down]);
         let timeout = Duration::from_millis(80);
 
         let start = std::time::Instant::now();
-        assert_eq!(input.poll(timeout), Some(InputEvent::Next));
+        assert_eq!(input.poll(timeout), Some(InputEvent::Down));
         assert!(start.elapsed() < timeout, "a queued event must not wait");
 
         let start = std::time::Instant::now();
@@ -375,21 +394,23 @@ mod tests {
     #[test]
     fn buffered_keys_arrive_before_end_of_input_is_honoured() {
         let (tx, rx) = mpsc::channel();
-        tx.send(InputEvent::Next).unwrap();
+        tx.send(InputEvent::Down).unwrap();
         tx.send(InputEvent::Select).unwrap();
         drop(tx);
 
         let mut input = StdinInput::from_receiver(rx, EndOfInput::Quit);
         let t = Duration::from_millis(20);
-        assert_eq!(input.poll(t), Some(InputEvent::Next));
+        assert_eq!(input.poll(t), Some(InputEvent::Down));
         assert_eq!(input.poll(t), Some(InputEvent::Select));
         assert_eq!(input.poll(t), Some(InputEvent::Quit));
     }
 
     #[test]
     fn keys_map_to_the_documented_events() {
-        assert_eq!(InputEvent::from_key("n"), Some(InputEvent::Next));
-        assert_eq!(InputEvent::from_key("P"), Some(InputEvent::Prev));
+        assert_eq!(InputEvent::from_key("n"), Some(InputEvent::Down));
+        assert_eq!(InputEvent::from_key("P"), Some(InputEvent::Up));
+        assert_eq!(InputEvent::from_key("h"), Some(InputEvent::Left));
+        assert_eq!(InputEvent::from_key("l"), Some(InputEvent::Right));
         assert_eq!(InputEvent::from_key(" s "), Some(InputEvent::Select));
         assert_eq!(InputEvent::from_key("r"), Some(InputEvent::Refresh));
         assert_eq!(InputEvent::from_key("q"), Some(InputEvent::Quit));
@@ -399,7 +420,7 @@ mod tests {
     /// do nothing.
     #[test]
     fn a_bare_enter_advances() {
-        assert_eq!(InputEvent::from_key(""), Some(InputEvent::Next));
+        assert_eq!(InputEvent::from_key(""), Some(InputEvent::Down));
     }
 
     /// An unrecognised key must be ignored, not guessed at — a stray keypress
