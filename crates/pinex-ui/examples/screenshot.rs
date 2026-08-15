@@ -25,7 +25,7 @@ fn main() -> std::io::Result<()> {
     for (name, screen) in [
         ("ab", Screen::Slots),
         ("stomp", Screen::Stomp),
-        ("gain", Screen::Gain),
+        ("gain", Screen::Levels),
     ] {
         let view = View {
             screen,

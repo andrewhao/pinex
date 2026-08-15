@@ -19,8 +19,9 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle};
 use embedded_graphics::text::{Alignment, Baseline, Text};
 
-use crate::browser::{Connection, Screen, View};
+use crate::browser::{Connection, Level, Screen, View};
 use crate::skin::{self, wrap, Pedal};
+use pinex_proto::message::{MAX_MASTER_VOLUME_DB, MIN_MASTER_VOLUME_DB};
 use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MIN_INPUT_TRIM_DB};
 
 /// The HAT's panel geometry.
@@ -48,7 +49,7 @@ where
         Connection::Connected { firmware } => match view.screen {
             Screen::Slots => draw_slots(target, view),
             Screen::Stomp => draw_stomp(target, view),
-            Screen::Gain => draw_gain(target, view, firmware),
+            Screen::Levels => draw_levels(target, view, firmware),
         },
     }
 }
@@ -336,70 +337,42 @@ where
     Ok(())
 }
 
-/// Global gain, as a knob you can read across a stage.
-fn draw_gain<D>(target: &mut D, view: &View<'_>, firmware: &str) -> Result<(), D::Error>
+/// Output level and input trim, one above the other.
+///
+/// Two values on one page rather than two pages, because paging is the
+/// expensive gesture on a box with three buttons. The one being edited is named
+/// and marked; left/right swaps them.
+fn draw_levels<D>(target: &mut D, view: &View<'_>, firmware: &str) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
     draw_header(target, view)?;
 
-    let span = MAX_INPUT_TRIM_DB - MIN_INPUT_TRIM_DB;
-    let fraction = ((view.gain_db - MIN_INPUT_TRIM_DB) / span).clamp(0.0, 1.0);
+    // Output level on top: it is the default focus and the one being ridden.
+    draw_level_row(
+        target,
+        26,
+        Level::Volume,
+        view.level_focus == Level::Volume,
+        view.master_volume_db,
+        MIN_MASTER_VOLUME_DB,
+        MAX_MASTER_VOLUME_DB,
+    )?;
+    draw_level_row(
+        target,
+        76,
+        Level::Trim,
+        view.level_focus == Level::Trim,
+        Some(view.gain_db),
+        MIN_INPUT_TRIM_DB,
+        MAX_INPUT_TRIM_DB,
+    )?;
 
-    // A wide bar rather than a dial: at this size a bar's fill is readable at a
-    // glance, where a pointer angle is not.
-    let bar = Rectangle::new(Point::new(12, 52), Size::new(104, 24));
-    bar.into_styled(PrimitiveStyle::with_stroke(DIM, 1))
-        .draw(target)?;
-    let filled = (102.0 * fraction) as u32;
-    if filled > 0 {
-        Rectangle::new(Point::new(13, 53), Size::new(filled, 22))
-            .into_styled(PrimitiveStyle::with_fill(if view.gain_db > 0.0 {
-                WARN
-            } else {
-                PLAYING
-            }))
-            .draw(target)?;
-    }
-
-    // Centre tick: unity gain, the value you return to.
-    Rectangle::new(Point::new(63, 46), Size::new(1, 36))
-        .into_styled(PrimitiveStyle::with_fill(TEXT))
-        .draw(target)?;
-
-    Text::with_alignment(
-        &format!("{:+.1}", view.gain_db),
-        Point::new(WIDTH as i32 / 2, 38),
-        MonoTextStyle::new(&FONT_10X20, TEXT),
-        Alignment::Center,
-    )
-    .draw(target)?;
-    Text::with_alignment(
-        "dB",
-        Point::new(WIDTH as i32 / 2, 92),
-        MonoTextStyle::new(&FONT_6X10, DIM),
-        Alignment::Center,
-    )
-    .draw(target)?;
-
-    Text::with_alignment(
-        &format!("{MIN_INPUT_TRIM_DB:.0}"),
-        Point::new(12, 86),
-        MonoTextStyle::new(&FONT_6X10, DIM),
-        Alignment::Left,
-    )
-    .draw(target)?;
-    Text::with_alignment(
-        &format!("+{MAX_INPUT_TRIM_DB:.0}"),
-        Point::new(WIDTH as i32 - 12, 86),
-        MonoTextStyle::new(&FONT_6X10, DIM),
-        Alignment::Right,
-    )
-    .draw(target)?;
-
+    // The only place the firmware version appears on the panel, and worth
+    // keeping: which firmware answered decides which offsets are right.
     Text::with_alignment(
         &format!("fw {firmware}"),
-        Point::new(WIDTH as i32 / 2, 112),
+        Point::new(WIDTH as i32 / 2, 116),
         MonoTextStyle::new(&FONT_6X10, DIM),
         Alignment::Center,
     )
@@ -407,8 +380,76 @@ where
     Ok(())
 }
 
-/// The explicit "NO PEDAL" screen the spec asks for.
-///
+/// One labelled bar. `value` of `None` means the pedal has not said yet.
+#[allow(clippy::too_many_arguments)]
+fn draw_level_row<D>(
+    target: &mut D,
+    top: i32,
+    level: Level,
+    focused: bool,
+    value: Option<f32>,
+    min: f32,
+    max: f32,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let label_color = if focused { PLAYING } else { DIM };
+    Text::with_alignment(
+        level.title(),
+        Point::new(6, top),
+        MonoTextStyle::new(&FONT_6X10, label_color),
+        Alignment::Left,
+    )
+    .draw(target)?;
+
+    // The value, right-aligned so the digits line up between the two rows.
+    let reading = match value {
+        Some(db) => format!("{db:+.1} dB"),
+        // Never a number we invented: master volume is in no state message, so
+        // until the pedal answers there is nothing honest to show.
+        None => "-- dB".to_string(),
+    };
+    Text::with_alignment(
+        &reading,
+        Point::new(WIDTH as i32 - 6, top),
+        MonoTextStyle::new(&FONT_6X10, if focused { TEXT } else { DIM }),
+        Alignment::Right,
+    )
+    .draw(target)?;
+
+    let bar = Rectangle::new(Point::new(6, top + 6), Size::new(WIDTH - 12, 18));
+    bar.into_styled(PrimitiveStyle::with_stroke(label_color, 1))
+        .draw(target)?;
+
+    if let Some(db) = value {
+        let fraction = ((db - min) / (max - min)).clamp(0.0, 1.0);
+        let filled = ((WIDTH - 14) as f32 * fraction) as u32;
+        if filled > 0 {
+            Rectangle::new(Point::new(7, top + 7), Size::new(filled, 16))
+                .into_styled(PrimitiveStyle::with_fill(if focused {
+                    if db > 0.0 {
+                        WARN
+                    } else {
+                        PLAYING
+                    }
+                } else {
+                    DIM
+                }))
+                .draw(target)?;
+        }
+    }
+
+    // Unity tick, the value you return to — only where 0 dB is inside the range.
+    if min < 0.0 && max > 0.0 {
+        let unity = 6 + ((WIDTH - 12) as f32 * (-min / (max - min))) as i32;
+        Rectangle::new(Point::new(unity, top + 3), Size::new(1, 24))
+            .into_styled(PrimitiveStyle::with_fill(TEXT))
+            .draw(target)?;
+    }
+    Ok(())
+}
+
 /// Deliberately shows nothing else. A blank-ish screen that still displayed the
 /// last known preset would be a display that lies.
 fn draw_no_pedal<D>(target: &mut D) -> Result<(), D::Error>
@@ -556,7 +597,7 @@ mod tests {
         for gain in [-15.0f32, -6.0, 0.0, 7.5, 15.0] {
             let mut panel = Buffer::new();
             let view = View {
-                screen: Screen::Gain,
+                screen: Screen::Levels,
                 gain_db: gain,
                 ..View::stub(&c)
             };
@@ -647,7 +688,7 @@ mod tests {
         let c = Connection::Connected {
             firmware: "1.3.17".into(),
         };
-        for screen in [Screen::Slots, Screen::Stomp, Screen::Gain] {
+        for screen in [Screen::Slots, Screen::Stomp, Screen::Levels] {
             let mut panel = Buffer::new();
             let view = View {
                 screen,

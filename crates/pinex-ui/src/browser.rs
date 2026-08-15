@@ -17,6 +17,7 @@
 
 use pinex_device::{Command, PedalEvent};
 pub use pinex_input::InputEvent;
+use pinex_proto::message::{MAX_MASTER_VOLUME_DB, MIN_MASTER_VOLUME_DB};
 use pinex_proto::state::{Slot, MAX_INPUT_TRIM_DB, MAX_PRESETS, MIN_INPUT_TRIM_DB};
 
 /// Which page the panel is showing.
@@ -30,16 +31,16 @@ pub enum Screen {
     Slots,
     /// Stomp mode, where the pedal exposes a third slot.
     Stomp,
-    /// Global input trim.
-    Gain,
+    /// Output level and input trim, together.
+    Levels,
 }
 
 impl Screen {
     pub fn next(self) -> Self {
         match self {
             Self::Slots => Self::Stomp,
-            Self::Stomp => Self::Gain,
-            Self::Gain => Self::Slots,
+            Self::Stomp => Self::Levels,
+            Self::Levels => Self::Slots,
         }
     }
 
@@ -47,10 +48,45 @@ impl Screen {
         match self {
             Self::Slots => "A/B",
             Self::Stomp => "STOMP",
-            Self::Gain => "GAIN",
+            Self::Levels => "LEVELS",
         }
     }
 }
+
+/// Which of the two levels the Levels page is editing.
+///
+/// One page, two values, because a stage box with four pages is a stage box
+/// nobody pages through under pressure. Left/right picks; up/down moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Level {
+    /// Master volume: the output level, and the one you would ride at a venue.
+    #[default]
+    Volume,
+    /// Input trim: gain staging, set once to match the instrument.
+    Trim,
+}
+
+impl Level {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Volume => Self::Trim,
+            Self::Trim => Self::Volume,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Volume => "VOL",
+            Self::Trim => "TRIM",
+        }
+    }
+}
+
+/// How far one nudge moves the output level.
+///
+/// A whole decibel, not the trim's half: the output range is 43 dB wide against
+/// the trim's 30, and this is the one you adjust standing up.
+const VOLUME_STEP_DB: f32 = 1.0;
 
 /// How far one nudge moves the gain.
 const GAIN_STEP_DB: f32 = 0.5;
@@ -102,6 +138,14 @@ pub struct View<'a> {
     pub bypassed: bool,
     /// Input trim in dB.
     pub gain_db: f32,
+    /// Which level the Levels page is editing.
+    pub level_focus: Level,
+    /// Master volume in dB, once the pedal has reported it.
+    ///
+    /// `None` until then, and deliberately not defaulted: master volume is in
+    /// no state message, so a number here that the pedal never sent would be
+    /// invention. Output level is not a good thing to guess at.
+    pub master_volume_db: Option<f32>,
     /// Names of what each slot holds, indexed by slot.
     pub slot_names: [Option<&'a str>; 3],
     /// The pedal's colour for what each slot holds.
@@ -173,6 +217,8 @@ impl<'a> View<'a> {
             stomp_mode: false,
             bypassed: false,
             gain_db: 0.0,
+            level_focus: Level::Volume,
+            master_volume_db: None,
             slot_names: [None; 3],
             slot_colors: [None; 3],
             tick: 0,
@@ -207,6 +253,8 @@ pub struct PresetBrowser {
     stomp_mode: bool,
     bypassed: bool,
     gain_db: f32,
+    level_focus: Level,
+    master_volume_db: Option<f32>,
     tick: u32,
     /// The preset whose name we are waiting for, while walking them all.
     awaiting_preset: Option<u8>,
@@ -237,6 +285,8 @@ impl PresetBrowser {
             stomp_mode: self.stomp_mode,
             bypassed: self.bypassed,
             gain_db: self.gain_db,
+            level_focus: self.level_focus,
+            master_volume_db: self.master_volume_db,
             slot_names: [
                 self.slot_name(Slot::A),
                 self.slot_name(Slot::B),
@@ -365,6 +415,14 @@ impl PresetBrowser {
                 }
                 Vec::new()
             }
+            // The only report of master volume there is — it appears in no
+            // state message, so this is the source of truth for it.
+            PedalEvent::ParamChanged(change) => {
+                if change.is_master_volume() {
+                    self.master_volume_db = Some(change.db);
+                }
+                Vec::new()
+            }
             // Deliberately does not clear `pending`: the pedal acknowledges
             // writes it then reverts, so treating this as confirmation would
             // make the display claim a preset change that never happened.
@@ -384,11 +442,29 @@ impl PresetBrowser {
     /// through it makes browsing dangerous.
     pub fn handle(&mut self, input: InputEvent) -> Vec<Command> {
         match input {
-            InputEvent::Next => self.nudge(1),
-            InputEvent::Prev => self.nudge(-1),
+            // The axes follow the picture, which is why the browser decides and
+            // not the binding table. On Slots the list runs down the screen and
+            // A/B sit side by side; on Levels the rows stack and their bars run
+            // across. A single fixed meaning per direction would be wrong on
+            // one page or the other.
+            InputEvent::Up => match self.screen {
+                Screen::Levels => self.focus_level(Level::Volume),
+                _ => self.nudge(-1),
+            },
+            InputEvent::Down => match self.screen {
+                Screen::Levels => self.focus_level(Level::Trim),
+                _ => self.nudge(1),
+            },
+            InputEvent::Left => match self.screen {
+                Screen::Levels => self.nudge(-1),
+                _ => self.select_slot(Slot::A),
+            },
+            InputEvent::Right => match self.screen {
+                Screen::Levels => self.nudge(1),
+                _ => self.select_slot(Slot::B),
+            },
             InputEvent::Select => self.commit(),
             InputEvent::Refresh => self.sync_all(),
-            InputEvent::Mode => self.toggle_mode(),
             InputEvent::Page => {
                 self.screen = self.screen.next();
                 // Stomp and Slots are two views of the pedal's actual mode, so
@@ -408,13 +484,28 @@ impl PresetBrowser {
     /// Move the value this page edits.
     fn nudge(&mut self, delta: i16) -> Vec<Command> {
         match self.screen {
-            Screen::Gain => {
-                let stepped = self.gain_db + delta as f32 * GAIN_STEP_DB;
-                self.gain_db = stepped.clamp(MIN_INPUT_TRIM_DB, MAX_INPUT_TRIM_DB);
-                // Gain is continuous and audible: applying as it moves is what
-                // a knob does, so this one is the exception to commit-on-select.
-                vec![Command::SetGain(self.gain_db)]
-            }
+            Screen::Levels => match self.level_focus {
+                Level::Trim => {
+                    let stepped = self.gain_db + delta as f32 * GAIN_STEP_DB;
+                    self.gain_db = stepped.clamp(MIN_INPUT_TRIM_DB, MAX_INPUT_TRIM_DB);
+                    // Continuous and audible: applying as it moves is what a
+                    // knob does, so this is the exception to commit-on-select.
+                    vec![Command::SetGain(self.gain_db)]
+                }
+                Level::Volume => {
+                    // The pedal is the only source for this one — it is in no
+                    // state message. Stepping from a value we invented could
+                    // move the output level a long way in one press, so when it
+                    // is unknown we ask instead of guessing.
+                    let Some(current) = self.master_volume_db else {
+                        return vec![Command::RequestMasterVolume];
+                    };
+                    let stepped = current + delta as f32 * VOLUME_STEP_DB;
+                    let clamped = stepped.clamp(MIN_MASTER_VOLUME_DB, MAX_MASTER_VOLUME_DB);
+                    self.master_volume_db = Some(clamped);
+                    vec![Command::SetMasterVolume(clamped)]
+                }
+            },
             Screen::Slots | Screen::Stomp => {
                 let span = MAX_PRESETS as i16;
                 self.cursor = (((self.cursor as i16 + delta) % span + span) % span) as u8;
@@ -429,7 +520,7 @@ impl PresetBrowser {
             return Vec::new();
         }
         match self.screen {
-            Screen::Gain => Vec::new(),
+            Screen::Levels => Vec::new(),
             Screen::Stomp => {
                 // Stomp mode plays slot C, so that is what gets loaded.
                 self.pending = Some(self.cursor);
@@ -452,23 +543,29 @@ impl PresetBrowser {
         }
     }
 
-    /// Swap which slot the Slots page is editing, or toggle the pedal's mode.
-    fn toggle_mode(&mut self) -> Vec<Command> {
-        match self.screen {
-            Screen::Slots => {
-                self.selected = match self.selected {
-                    Slot::A => Slot::B,
-                    _ => Slot::A,
-                };
-                // Show what that slot already holds, so the cursor starts from
-                // the current value rather than wherever it was left.
-                if let Some(preset) = self.slot_preset(self.selected) {
-                    self.cursor = preset.min(MAX_PRESETS - 1);
-                }
-                Vec::new()
-            }
-            _ => Vec::new(),
+    /// Edit the slot on that side of the screen.
+    ///
+    /// Directional rather than a toggle: A is drawn on the left and B on the
+    /// right, so pressing left should reach A whichever slot was being edited.
+    /// A toggle made two presses of the same direction go there and back.
+    fn select_slot(&mut self, slot: Slot) -> Vec<Command> {
+        if self.screen != Screen::Slots {
+            return Vec::new();
         }
+        self.selected = slot;
+        // Show what that slot already holds, so the cursor starts from the
+        // current value rather than wherever it was left.
+        if let Some(preset) = self.slot_preset(self.selected) {
+            self.cursor = preset.min(MAX_PRESETS - 1);
+        }
+        Vec::new()
+    }
+
+    /// Move the Levels page to a row. Choosing is not changing, so nothing is
+    /// sent to the pedal.
+    fn focus_level(&mut self, level: Level) -> Vec<Command> {
+        self.level_focus = level;
+        Vec::new()
     }
 
     /// Ask for the state, then walk the presets one at a time.
@@ -481,7 +578,13 @@ impl PresetBrowser {
     /// answering is never asked again.
     fn sync_all(&mut self) -> Vec<Command> {
         self.awaiting_preset = Some(0);
-        vec![Command::RequestState, Command::RequestPreset(0)]
+        // Master volume is asked for separately because it is in no state
+        // message. One extra request, not twenty — it does not join the sweep.
+        vec![
+            Command::RequestState,
+            Command::RequestMasterVolume,
+            Command::RequestPreset(0),
+        ]
     }
 }
 
@@ -517,6 +620,25 @@ mod tests {
         PedalEvent::StateChanged(PedalState::from_body(raw).unwrap())
     }
 
+    /// A browser sitting on the Levels page.
+    fn at_levels() -> PresetBrowser {
+        let mut b = connected();
+        b.apply(&state_with_active(0));
+        while b.view().screen != Screen::Levels {
+            b.handle(InputEvent::Page);
+        }
+        b
+    }
+
+    /// The pedal reporting its master volume, which is the only way it is known.
+    fn master_volume_of(db: f32) -> PedalEvent {
+        PedalEvent::ParamChanged(pinex_proto::message::ParamChange {
+            index: pinex_proto::message::PARAM_MASTER_VOLUME,
+            db,
+            raw: pinex_proto::message::master_volume_to_wire(db),
+        })
+    }
+
     fn connected() -> PresetBrowser {
         let mut b = PresetBrowser::new();
         b.apply(&PedalEvent::Connected {
@@ -536,8 +658,12 @@ mod tests {
 
         assert_eq!(
             cmds,
-            vec![Command::RequestState, Command::RequestPreset(0)],
-            "the sweep must start with one request, not twenty"
+            vec![
+                Command::RequestState,
+                Command::RequestMasterVolume,
+                Command::RequestPreset(0)
+            ],
+            "the sweep must start with one preset request, not twenty"
         );
         assert!(b.view().connection.is_connected());
     }
@@ -610,7 +736,7 @@ mod tests {
             view_on(Screen::Slots).animating(),
             "the Slots page shows the A/B names, so a long one must scroll"
         );
-        for still in [Screen::Stomp, Screen::Gain] {
+        for still in [Screen::Stomp, Screen::Levels] {
             assert!(
                 !view_on(still).animating(),
                 "{still:?} shows no A/B names, so nothing on it can scroll — \
@@ -627,7 +753,7 @@ mod tests {
 
         assert_eq!(b.view().cursor_name, Some("TF BENSON PREAMP - 1"));
         for _ in 0..15 {
-            b.handle(InputEvent::Next);
+            b.handle(InputEvent::Down);
         }
         assert_eq!(b.view().cursor_name, Some("TF TILT - 1 ADV"));
     }
@@ -637,10 +763,10 @@ mod tests {
         let mut b = connected();
         assert_eq!(b.view().cursor, 0);
 
-        b.handle(InputEvent::Prev);
+        b.handle(InputEvent::Up);
         assert_eq!(b.view().cursor, MAX_PRESETS - 1, "0 must wrap back to 20");
 
-        b.handle(InputEvent::Next);
+        b.handle(InputEvent::Down);
         assert_eq!(b.view().cursor, 0, "20 must wrap forward to 1");
     }
 
@@ -649,8 +775,8 @@ mod tests {
     fn selecting_a_preset_does_not_claim_it_is_active() {
         let mut b = connected();
         b.apply(&state_with_active(3));
-        b.handle(InputEvent::Next);
-        b.handle(InputEvent::Next);
+        b.handle(InputEvent::Down);
+        b.handle(InputEvent::Down);
 
         let cmds = b.handle(InputEvent::Select);
 
@@ -675,7 +801,7 @@ mod tests {
     fn the_pedal_confirming_the_request_clears_the_pending_flag() {
         let mut b = connected();
         b.apply(&state_with_active(3));
-        b.handle(InputEvent::Next);
+        b.handle(InputEvent::Down);
         b.handle(InputEvent::Select);
         assert!(b.view().pending);
 
@@ -691,7 +817,7 @@ mod tests {
     fn a_different_preset_arriving_leaves_the_request_pending() {
         let mut b = connected();
         b.apply(&state_with_active(3));
-        b.handle(InputEvent::Next);
+        b.handle(InputEvent::Down);
         b.handle(InputEvent::Select); // asks for 4
 
         b.apply(&state_with_active(9)); // pedal says 9
@@ -721,8 +847,8 @@ mod tests {
     fn later_state_changes_leave_the_browsing_cursor_alone() {
         let mut b = connected();
         b.apply(&state_with_active(7));
-        b.handle(InputEvent::Next);
-        b.handle(InputEvent::Next);
+        b.handle(InputEvent::Down);
+        b.handle(InputEvent::Down);
         assert_eq!(b.view().cursor, 9);
 
         b.apply(&state_with_active(2));
@@ -754,6 +880,114 @@ mod tests {
         let mut b = PresetBrowser::new();
         assert_eq!(b.handle(InputEvent::Select), Vec::new());
         assert!(!b.view().pending);
+    }
+
+    /// Left/right picks which level is being edited. The binding already
+    /// exists — Mode does nothing on this page today — so no new control is
+    /// needed for a second value.
+    /// The axes match the picture: the rows are stacked, so up and down move
+    /// between them, and each row's bar runs across, so left and right move it.
+    #[test]
+    fn up_and_down_choose_which_level_row_is_edited() {
+        let mut b = at_levels();
+        assert_eq!(
+            b.view().level_focus,
+            Level::Volume,
+            "output level is what a player rides, so it is the default"
+        );
+
+        b.handle(InputEvent::Down);
+        assert_eq!(b.view().level_focus, Level::Trim, "TRIM is the lower row");
+        b.handle(InputEvent::Up);
+        assert_eq!(b.view().level_focus, Level::Volume, "VOL is the upper row");
+
+        // Directional, not a toggle: pressing the same way twice stays put.
+        b.handle(InputEvent::Up);
+        assert_eq!(b.view().level_focus, Level::Volume);
+    }
+
+    /// Left and right must not move the browsing cursor on this page — they
+    /// belong to the bar now.
+    #[test]
+    fn the_level_rows_do_not_move_the_preset_cursor() {
+        let mut b = at_levels();
+        let before = b.view().cursor;
+        b.handle(InputEvent::Left);
+        b.handle(InputEvent::Right);
+        assert_eq!(
+            b.view().cursor,
+            before,
+            "the preset cursor is not on this page"
+        );
+    }
+
+    /// Turning the output level must ask the pedal to change it, in dB.
+    #[test]
+    fn nudging_the_output_level_sets_master_volume() {
+        let mut b = at_levels();
+        b.apply(&master_volume_of(-10.0));
+
+        let cmds = b.handle(InputEvent::Right);
+        match cmds.as_slice() {
+            [Command::SetMasterVolume(db)] => {
+                assert!(*db > -10.0, "right must go louder, got {db}");
+            }
+            other => panic!("expected a master volume write, got {other:?}"),
+        }
+    }
+
+    /// The range is the pedal's, and nothing outside it may be sent — this is
+    /// the one control where a wrong number is expensive.
+    #[test]
+    fn the_output_level_stops_at_the_ends_of_the_pedals_range() {
+        let mut b = at_levels();
+        b.apply(&master_volume_of(MAX_MASTER_VOLUME_DB));
+        for _ in 0..5 {
+            b.handle(InputEvent::Right);
+        }
+        assert!(
+            b.view().master_volume_db.unwrap() <= MAX_MASTER_VOLUME_DB,
+            "went past the top"
+        );
+
+        b.apply(&master_volume_of(MIN_MASTER_VOLUME_DB));
+        for _ in 0..5 {
+            b.handle(InputEvent::Left);
+        }
+        assert!(
+            b.view().master_volume_db.unwrap() >= MIN_MASTER_VOLUME_DB,
+            "went past the bottom"
+        );
+    }
+
+    /// With the focus on trim, this page behaves exactly as it did before.
+    #[test]
+    fn nudging_the_trim_still_sets_the_input_trim() {
+        let mut b = at_levels();
+        b.handle(InputEvent::Down); // focus the lower row, TRIM
+        let cmds = b.handle(InputEvent::Right);
+        assert!(
+            matches!(cmds.as_slice(), [Command::SetGain(_)]),
+            "expected an input trim write, got {cmds:?}"
+        );
+    }
+
+    /// Master volume is in no state message, so before the pedal reports it we
+    /// do not know it. Nudging from an invented starting point could jump the
+    /// output level a long way; ask instead.
+    #[test]
+    fn nudging_the_output_level_before_the_pedal_reports_it_asks_rather_than_guesses() {
+        let mut b = at_levels();
+        assert_eq!(b.view().master_volume_db, None);
+
+        let cmds = b.handle(InputEvent::Right);
+
+        assert_eq!(
+            cmds,
+            vec![Command::RequestMasterVolume],
+            "must ask, not invent a level"
+        );
+        assert_eq!(b.view().master_volume_db, None, "still unknown");
     }
 
     /// Stomping the footswitch must move the panel.
@@ -823,7 +1057,7 @@ mod tests {
         b.apply(&named(0, "TF BENSON PREAMP - 1"));
         assert_eq!(b.view().cursor_label(), "01 TF BENSON PREAMP - 1");
 
-        b.handle(InputEvent::Prev);
+        b.handle(InputEvent::Up);
         assert_eq!(
             b.view().cursor_label(),
             "20 ...",

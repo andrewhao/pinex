@@ -30,13 +30,16 @@ pub struct FrameRecord {
 }
 
 /// Everything the page renders.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     pub connected: bool,
     pub firmware: Option<String>,
     pub active_preset: Option<u8>,
     pub active_name: Option<String>,
     pub cursor: u8,
+    /// Master volume in dB, once the pedal has reported it. `None` until then —
+    /// it is in no state message, so there is nothing to show before it answers.
+    pub master_volume_db: Option<f32>,
     pub names: Vec<Option<String>>,
     /// Per-preset RGB, mirroring the colour the pedal lights for each preset.
     pub colors: Vec<[u8; 3]>,
@@ -97,6 +100,11 @@ pub fn render_page(snapshot: &Snapshot) -> String {
         (None, _) => html.push('—'),
     }
     html.push_str("</p>");
+
+    html.push_str(&match snapshot.master_volume_db {
+        Some(db) => format!("<p>Master volume: {db:+.1} dB</p>"),
+        None => "<p>Master volume: <em>not reported yet</em></p>".to_string(),
+    });
 
     html.push_str("<h2>Presets</h2><table>");
     for (i, name) in snapshot.names.iter().enumerate() {
@@ -217,6 +225,7 @@ mod tests {
             active_preset: Some(1),
             active_name: Some("TF MORNIING GLORY - BRIGHT 1".into()),
             cursor: 0,
+            master_volume_db: Some(-12.0),
             names: vec![
                 Some("TF BENSON PREAMP - 1".into()),
                 Some("TF MORNIING GLORY - BRIGHT 1".into()),

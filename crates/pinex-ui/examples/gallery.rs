@@ -35,10 +35,29 @@ fn main() {
         ("A/B — both slots", base(Screen::Slots)),
         ("STOMP — slot C", base(Screen::Stomp)),
         (
-            "GAIN",
+            "LEVELS — editing the output level",
             View {
                 gain_db: -4.5,
-                ..base(Screen::Gain)
+                master_volume_db: Some(-12.0),
+                level_focus: pinex_ui::browser::Level::Volume,
+                ..base(Screen::Levels)
+            },
+        ),
+        (
+            "LEVELS — editing the input trim",
+            View {
+                gain_db: -4.5,
+                master_volume_db: Some(-12.0),
+                level_focus: pinex_ui::browser::Level::Trim,
+                ..base(Screen::Levels)
+            },
+        ),
+        (
+            "LEVELS — before the pedal reports its output level",
+            View {
+                gain_db: -4.5,
+                master_volume_db: None,
+                ..base(Screen::Levels)
             },
         ),
         ("NO PEDAL", View::stub(&offline)),
