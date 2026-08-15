@@ -62,6 +62,11 @@ fi
 say "installing $(du -h "$BIN" | cut -f1) binary (privileged=$PRIVILEGED)"
 
 if [ "$PRIVILEGED" = no ]; then
+  # Remember whether it was running, so it can be put back. Leaving a stage box
+  # stopped because a deploy stopped it has happened twice, and both times it
+  # looked like a bug in the thing being deployed: the panel holds its last
+  # frame, so a dead service is indistinguishable from a frozen one.
+  WAS_ACTIVE=$(ssh "$TARGET_HOST" 'systemctl --user is-active pinex 2>/dev/null || true')
   ssh "$TARGET_HOST" 'systemctl --user stop pinex 2>/dev/null || true; pkill -x pinex 2>/dev/null || true'
   ssh "$TARGET_HOST" 'mkdir -p ~/bin ~/.config/systemd/user'
   scp -q "$BIN" "$TARGET_HOST:/tmp/pinex.new"
@@ -77,6 +82,19 @@ id -nG | tr ' ' '\n' | grep -qx dialout && echo "user is in dialout: can open th
   || echo "WARNING: user is NOT in dialout; run: sudo usermod -aG dialout $USER"
 ls -l /dev/ttyACM* 2>/dev/null || echo "no /dev/ttyACM* — plug the pedal into the Pi"
 REMOTE
+  # Put it back if it was up. A deploy should leave the box in the state it
+  # found it, not in the state that was convenient halfway through.
+  if [ "$WAS_ACTIVE" = active ]; then
+    say "restarting the service it was running before"
+    ssh "$TARGET_HOST" 'systemctl --user start pinex'
+    sleep 3
+    STATE=$(ssh "$TARGET_HOST" 'systemctl --user is-active pinex')
+    echo "  service is now: $STATE"
+    [ "$STATE" = active ] || echo "  WARNING: it did not come back up" >&2
+  else
+    say "the service was not running before, so it has been left stopped"
+  fi
+
   say "installed (unprivileged). Run it with:"
   echo "  ssh -t $TARGET_HOST '~/bin/pinex /dev/ttyACM0'"
   echo
