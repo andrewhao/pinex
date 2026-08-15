@@ -29,6 +29,80 @@ pub const TYPE_WRITE_ACK: u16 = 0x0005;
 /// `tests/hardware_captures.rs::preset_responses_carry_their_index_and_name`.
 pub const TYPE_PRESET_RESPONSE: u16 = 0x0304;
 
+/// Message type carrying a single parameter value, in both directions.
+///
+/// We send it to set master volume; the pedal sends it back reporting the value
+/// it settled on. `Builty/TonexOneController` calls the inbound one
+/// `TYPE_PARAM_CHANGED`. Only firmware new enough for Editor support has it —
+/// ours (1.3.17) qualifies.
+pub const TYPE_PARAM_CHANGED: u16 = 0x0309;
+
+/// Message type that asks the pedal for its master volume.
+pub const TYPE_MASTER_VOLUME_REQUEST: u16 = 0x030D;
+
+/// Parameter index of master volume within [`TYPE_PARAM_CHANGED`].
+pub const PARAM_MASTER_VOLUME: u16 = 0x0000;
+
+/// The master-volume range, in decibels.
+///
+/// From `Builty/TonexOneController`, which maps the ToneX One's control onto the
+/// range the larger ToneX exposes. The pedal itself clamps nothing, and neither
+/// does the reference — see [`set_master_volume`].
+pub const MIN_MASTER_VOLUME_DB: f32 = -40.0;
+pub const MAX_MASTER_VOLUME_DB: f32 = 3.0;
+
+/// The width of the decibel range, which is also the scale factor to the wire.
+const MASTER_VOLUME_DB_SPAN: f32 = MAX_MASTER_VOLUME_DB - MIN_MASTER_VOLUME_DB;
+
+/// The pedal's own master-volume scale runs 0..10, not in decibels.
+const MASTER_VOLUME_WIRE_MAX: f32 = 10.0;
+
+/// Decibels to the 0..10 scale the pedal speaks.
+///
+/// **The pedal does not take decibels.** The reference converts on the way in
+/// (`((db + 40) / 43) * 10`) and back on the way out, and only the converted
+/// value ever reaches the wire. Sending decibels straight through would put
+/// `-40` into a control that reads `0..10` — which is not a quiet pedal, it is
+/// an out-of-range one.
+pub fn master_volume_to_wire(db: f32) -> f32 {
+    // NaN collapses to the floor rather than propagating onto the wire: clamp
+    // alone would pass it straight through.
+    if db.is_nan() {
+        return 0.0;
+    }
+    let clamped = db.clamp(MIN_MASTER_VOLUME_DB, MAX_MASTER_VOLUME_DB);
+    ((clamped - MIN_MASTER_VOLUME_DB) / MASTER_VOLUME_DB_SPAN) * MASTER_VOLUME_WIRE_MAX
+}
+
+/// The 0..10 scale back to decibels, for reading the pedal's own answer.
+pub fn master_volume_from_wire(raw: f32) -> f32 {
+    if raw.is_nan() {
+        return MIN_MASTER_VOLUME_DB;
+    }
+    let clamped = raw.clamp(0.0, MASTER_VOLUME_WIRE_MAX);
+    (clamped / MASTER_VOLUME_WIRE_MAX) * MASTER_VOLUME_DB_SPAN + MIN_MASTER_VOLUME_DB
+}
+
+/// A single parameter value the pedal has reported.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamChange {
+    /// Which parameter. [`PARAM_MASTER_VOLUME`] is the only one we act on.
+    pub index: u16,
+    /// The value in decibels, already off the pedal's 0..10 scale.
+    ///
+    /// Only meaningful for master volume; the other 111 parameters have their
+    /// own units and are not interpreted here.
+    pub db: f32,
+    /// The raw value exactly as the pedal sent it, before any conversion.
+    pub raw: f32,
+}
+
+impl ParamChange {
+    pub fn is_master_volume(&self) -> bool {
+        self.index == PARAM_MASTER_VOLUME
+    }
+}
+
 /// Header marker every message opens with.
 const HEADER_MARKER: [u8; 2] = [0xB9, 0x03];
 
@@ -39,6 +113,8 @@ pub enum MessageType {
     PresetResponse,
     /// Acknowledgement of a state write. Carries no payload and no promise.
     WriteAck,
+    /// A single parameter's value, in either direction.
+    ParamChanged,
     Unknown(u16),
 }
 
@@ -49,6 +125,7 @@ impl MessageType {
             TYPE_STATE_UPDATE => Self::StateUpdate,
             TYPE_PRESET_RESPONSE => Self::PresetResponse,
             TYPE_WRITE_ACK => Self::WriteAck,
+            TYPE_PARAM_CHANGED => Self::ParamChanged,
             other => Self::Unknown(other),
         }
     }
@@ -168,6 +245,82 @@ pub fn request_preset(preset: u8, detail: PresetDetail) -> Result<Vec<u8>, Messa
     payload[15] = preset;
     payload[16] = detail as u8;
     Ok(encode_frame(&payload))
+}
+
+/// Set the pedal's master volume, in decibels.
+///
+/// Unlike every other write in this crate, this does **not** go through the
+/// state: master volume is not in the state message at all. There is nothing to
+/// patch and nothing to diff-assert, so the safety this crate normally gets
+/// structurally has to be spelled out — hence the clamp in
+/// [`master_volume_to_wire`], which the reference implementation does not have.
+///
+/// Loudness is the one setting where a wrong number costs something, so pair
+/// this with [`request_master_volume`] and believe the pedal's answer rather
+/// than assuming the write landed.
+pub fn set_master_volume(db: f32) -> Vec<u8> {
+    let mut payload = vec![
+        0xb9, 0x03, 0x81, 0x09, 0x03, 0x82, 0x0a, 0x00, 0x80, 0x0b, 0x03, // message
+        0xb9, 0x04, 0x03, 0x00, 0x00, 0x88, // payload up to the float marker
+    ];
+    payload.extend_from_slice(&master_volume_to_wire(db).to_le_bytes());
+    encode_frame(&payload)
+}
+
+/// Ask the pedal what its master volume is.
+///
+/// The reply is a [`TYPE_PARAM_CHANGED`] message; feed it to
+/// [`parse_param_changed`]. This is the only way to know the value — it appears
+/// nowhere in the state.
+pub fn request_master_volume() -> Vec<u8> {
+    encode_frame(&[
+        0xb9, 0x03, 0x81, 0x0d, 0x03, 0x82, 0x05, 0x00, 0x80, 0x0b, 0x03, 0xb9, 0x03, 0x03, 0x00,
+        0x00,
+    ])
+}
+
+/// Read a single-parameter report from the pedal.
+///
+/// Located by scanning for the `B9 04 03` marker rather than by a fixed offset,
+/// matching the reference's `memmem` and for the same reason every other lookup
+/// in this crate is structural: fixed offsets into this protocol have already
+/// been wrong once between firmware generations.
+pub fn parse_param_changed(body: &[u8]) -> Result<ParamChange, MessageError> {
+    const MARKER: [u8; 3] = [0xB9, 0x04, 0x03];
+
+    let start = body
+        .windows(MARKER.len())
+        .position(|window| window == MARKER)
+        .ok_or(MessageError::UnexpectedShape {
+            what: "no B9 04 03 parameter marker in a param-changed message",
+        })?;
+
+    // marker, then a 2-byte little-endian index, then the 0x88 f32 tag.
+    let index_at = start + MARKER.len();
+    let value_at = index_at + 3;
+    if body.len() < value_at + 4 {
+        return Err(MessageError::UnexpectedShape {
+            what: "param-changed message truncated before its value",
+        });
+    }
+    if body[value_at - 1] != 0x88 {
+        return Err(MessageError::UnexpectedShape {
+            what: "param-changed value is not tagged as an f32",
+        });
+    }
+
+    let index = u16::from_le_bytes([body[index_at], body[index_at + 1]]);
+    let raw = f32::from_le_bytes([
+        body[value_at],
+        body[value_at + 1],
+        body[value_at + 2],
+        body[value_at + 3],
+    ]);
+    Ok(ParamChange {
+        index,
+        db: master_volume_from_wire(raw),
+        raw,
+    })
 }
 
 /// Write state back to the pedal.
@@ -401,6 +554,130 @@ pub fn parse_header(body: &[u8]) -> Result<Header, MessageError> {
 
 #[cfg(test)]
 mod tests {
+    /// The reference implementation's exact template, transcribed once here so
+    /// the builder is checked against it rather than against itself.
+    ///
+    /// `usb_tonex_one_send_master_volume`:
+    ///   message {0xb9,0x03,0x81,0x09,0x03,0x82,0x0A,0x00,0x80,0x0B,0x03}
+    ///   payload {0xB9,0x04,0x03,0x00,0x00,0x88, f32 }
+    #[test]
+    fn a_master_volume_write_matches_the_reference_template() {
+        let frame = set_master_volume(MAX_MASTER_VOLUME_DB);
+        let body = crate::frame::decode_frame(&frame).expect("must be a valid frame");
+
+        assert_eq!(
+            &body[..11],
+            &[0xb9, 0x03, 0x81, 0x09, 0x03, 0x82, 0x0a, 0x00, 0x80, 0x0b, 0x03],
+            "message header"
+        );
+        assert_eq!(
+            &body[11..17],
+            &[0xb9, 0x04, 0x03, 0x00, 0x00, 0x88],
+            "payload marker"
+        );
+        assert_eq!(body.len(), 21, "11 header + 10 payload");
+    }
+
+    /// The trap. The pedal does **not** take decibels: it takes a 0..10 linear
+    /// scale, and the reference converts on both sides. Sending dB straight
+    /// through would put -40 on a 0..10 control.
+    #[test]
+    fn the_wire_value_is_the_zero_to_ten_scale_not_decibels() {
+        let wire_of = |db: f32| {
+            let frame = set_master_volume(db);
+            let body = crate::frame::decode_frame(&frame).unwrap();
+            f32::from_le_bytes([body[17], body[18], body[19], body[20]])
+        };
+
+        // -40 dB is the bottom of the range, which is 0 on the wire.
+        assert!((wire_of(MIN_MASTER_VOLUME_DB) - 0.0).abs() < 0.01);
+        // +3 dB is the top, which is 10.
+        assert!((wire_of(MAX_MASTER_VOLUME_DB) - 10.0).abs() < 0.01);
+        // Unity sits where the reference's formula puts it.
+        assert!((wire_of(0.0) - 40.0 / 4.3).abs() < 0.01, "0 dB");
+    }
+
+    /// Loudness is the one setting where a bad number is expensive, and the
+    /// reference clamps nowhere at all.
+    #[test]
+    fn master_volume_is_clamped_before_it_reaches_the_pedal() {
+        let wire_of = |db: f32| {
+            let frame = set_master_volume(db);
+            let body = crate::frame::decode_frame(&frame).unwrap();
+            f32::from_le_bytes([body[17], body[18], body[19], body[20]])
+        };
+
+        assert!(
+            (wire_of(1000.0) - 10.0).abs() < 0.01,
+            "absurdly loud is capped"
+        );
+        assert!(
+            (wire_of(-1000.0) - 0.0).abs() < 0.01,
+            "absurdly quiet is floored"
+        );
+        assert!(
+            (wire_of(f32::NAN) - 0.0).abs() < 0.01,
+            "NaN must not reach the pedal"
+        );
+    }
+
+    /// Round trip through the scale the pedal actually speaks.
+    #[test]
+    fn decibels_survive_the_round_trip_through_the_wire_scale() {
+        for db in [-40.0, -30.0, -12.0, -6.0, 0.0, 3.0] {
+            let back = master_volume_from_wire(master_volume_to_wire(db));
+            assert!((back - db).abs() < 0.01, "{db} dB came back as {back}");
+        }
+    }
+
+    #[test]
+    fn a_master_volume_request_matches_the_reference_template() {
+        let frame = request_master_volume();
+        let body = crate::frame::decode_frame(&frame).unwrap();
+        assert_eq!(
+            body,
+            vec![
+                0xb9, 0x03, 0x81, 0x0d, 0x03, 0x82, 0x05, 0x00, 0x80, 0x0b, 0x03, 0xb9, 0x03, 0x03,
+                0x00, 0x00
+            ]
+        );
+    }
+
+    /// The pedal answers with the same 0x0309 code it accepts, so the reply is
+    /// parsed back into decibels — which is what lets the display show what the
+    /// pedal actually has rather than what we asked for.
+    #[test]
+    fn a_param_changed_reply_reports_the_master_volume_in_decibels() {
+        // 5.0 on the wire is the midpoint of 0..10.
+        let mut body = vec![
+            0xb9, 0x03, 0x81, 0x09, 0x03, 0x82, 0x0a, 0x00, 0x80, 0x0b, 0x03, 0xb9, 0x04, 0x03,
+            0x00, 0x00, 0x88,
+        ];
+        body.extend_from_slice(&5.0f32.to_le_bytes());
+
+        let change = parse_param_changed(&body).expect("should parse");
+        assert_eq!(change.index, 0, "index 0 is master volume");
+        assert!(
+            (change.db - (5.0 / 10.0 * 43.0 - 40.0)).abs() < 0.01,
+            "got {} dB",
+            change.db
+        );
+    }
+
+    /// A reply about some other parameter must not be mistaken for the volume.
+    #[test]
+    fn a_reply_about_another_parameter_is_reported_with_its_own_index() {
+        let mut body = vec![
+            0xb9, 0x03, 0x81, 0x09, 0x03, 0x82, 0x0a, 0x00, 0x80, 0x0b, 0x03, 0xb9, 0x04, 0x03,
+            0x07, 0x00, 0x88,
+        ];
+        body.extend_from_slice(&1.0f32.to_le_bytes());
+
+        let change = parse_param_changed(&body).expect("should parse");
+        assert_eq!(change.index, 7);
+        assert!(!change.is_master_volume());
+    }
+
     use super::*;
     use crate::frame::decode_frame;
     use crate::state::PedalState;
