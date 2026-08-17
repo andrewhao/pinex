@@ -7,6 +7,16 @@ Type=simple
 ExecStart=%h/bin/pinex /dev/ttyACM0
 Restart=always
 RestartSec=2
+# Restart=always only catches a process that exits. A pedal write that blocked
+# forever once left this alive but wedged: every button dead, the panel holding
+# its last frame, and nothing for systemd to act on. The app sends WATCHDOG=1
+# every turn of its loop (~50 ms), so fifteen seconds of silence means the loop
+# has stopped and the service is restarted.
+#
+# NotifyAccess is required: it defaults to none, and without it systemd
+# discards the keepalives and kills the service every fifteen seconds.
+WatchdogSec=15
+NotifyAccess=main
 Environment=PINEX_WEB_PORT=8080
 # stdin is /dev/null here. The app treats that as "no keyboard" and keeps
 # running rather than quitting — see pinex_input::EndOfInput.

@@ -51,10 +51,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("! debug page unavailable: {e}"),
     }
 
+    // Sends WATCHDOG=1 once per turn of the loop, so systemd can restart a
+    // process that is alive but stuck — the one failure Restart=always cannot
+    // see, and one this program has actually had. A no-op off systemd.
+    let watchdog = pinex::watchdog::Watchdog::from_env();
+    eprintln!(
+        "watchdog: {}",
+        if watchdog.is_active() {
+            "reporting to systemd"
+        } else {
+            "not under systemd, nothing to report to"
+        }
+    );
+
     app.start()?;
     eprintln!("{}", USAGE);
 
     while app.step() {
+        // After the step, not before: it must mean "the loop turned", and a
+        // ping sent before the work would still fire on a loop wedged inside
+        // it, which is precisely the thing being watched for.
+        watchdog.ping();
         for error in app.errors.drain(..) {
             eprintln!("! {error}");
         }

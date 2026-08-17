@@ -13,6 +13,8 @@
 //! browse-and-select session with no pedal attached, and `main.rs` swaps in the
 //! real tty without the loop knowing.
 
+pub mod watchdog;
+
 use std::time::Duration;
 
 use pinex_device::{Command, Pedal, PedalEvent};
