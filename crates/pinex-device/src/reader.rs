@@ -15,7 +15,9 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use pinex_proto::message::{parse_header, parse_hello, parse_preset_name, MessageType, PresetInfo};
+use pinex_proto::message::{
+    parse_header, parse_hello, parse_preset_name, MessageType, ParamChange, PresetInfo,
+};
 use pinex_proto::state::{PedalState, Slot};
 use pinex_proto::{decode_frame, FrameAccumulator};
 
@@ -41,6 +43,12 @@ pub enum PedalEvent {
     /// **Not a confirmation.** The pedal sends this even when it is about to
     /// revert the change; only a subsequent `StateChanged` is evidence.
     WriteAcknowledged,
+    /// The pedal reported a single parameter's value.
+    ///
+    /// Only master volume is acted on. It lives in no state message, so this
+    /// report is the *only* way to know it — which makes it the source of
+    /// truth for the one setting that has none.
+    ParamChanged(ParamChange),
     /// A frame arrived that we could not interpret. Carries the bytes so the
     /// failure can be diagnosed — and turned into a fixture.
     ParseError {
@@ -72,6 +80,13 @@ pub enum Command {
     SetStompMode(bool),
     /// Input trim, in dB, clamped by the codec to what the pedal accepts.
     SetGain(f32),
+    /// Master volume, in dB, clamped by the codec to what the pedal accepts.
+    ///
+    /// Not part of the state, so unlike every other write this one cannot be
+    /// diff-asserted. Pair it with [`Command::RequestMasterVolume`].
+    SetMasterVolume(f32),
+    /// Ask the pedal for its master volume. The answer is `ParamChanged`.
+    RequestMasterVolume,
 }
 
 /// A running reader thread. Dropping this asks the thread to stop and joins it.
@@ -212,6 +227,10 @@ fn interpret(frame: &[u8]) -> PedalEvent {
         // Acknowledges a write; says nothing about whether it stuck. Swallowed
         // deliberately — surfacing it would train people to read it as success.
         MessageType::WriteAck => PedalEvent::WriteAcknowledged,
+        MessageType::ParamChanged => match pinex_proto::message::parse_param_changed(&body) {
+            Ok(change) => PedalEvent::ParamChanged(change),
+            Err(e) => parse_error(&body, e),
+        },
         MessageType::Unknown(code) => PedalEvent::ParseError {
             raw: body.to_vec(),
             reason: format!("unrecognised message type {code:#06x}"),

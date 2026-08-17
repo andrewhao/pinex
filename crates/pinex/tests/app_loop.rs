@@ -11,6 +11,7 @@ use pinex::App;
 use pinex_device::sim::PedalSim;
 use pinex_device::Pedal;
 use pinex_input::{InputEvent, ScriptedInput};
+use pinex_proto::state::Slot;
 use pinex_ui::RecordingRenderer;
 
 /// Wall-clock budget for PTY round trips to land. Generous, but the tests exit
@@ -69,7 +70,7 @@ fn browsing_walks_the_presets_and_shows_their_real_names() {
     for _ in 0..20 {
         let view = app.browser().view();
         names.push((view.cursor, view.cursor_name.map(str::to_string)));
-        app.step_with(InputEvent::Next);
+        app.step_with(InputEvent::Down);
     }
 
     assert!(
@@ -93,7 +94,7 @@ fn selecting_a_preset_changes_what_the_pedal_plays() {
 
     // Browse to preset 8 (0-based 7) and select it.
     for _ in 0..6 {
-        app.step_with(InputEvent::Next);
+        app.step_with(InputEvent::Down);
     }
     assert_eq!(app.browser().view().cursor, 7);
 
@@ -118,11 +119,11 @@ fn the_browser_wraps_around_the_end_of_the_list() {
     app.settle_until(BUDGET, |b| b.view().active.is_some());
 
     for _ in 0..20 {
-        app.step_with(InputEvent::Next);
+        app.step_with(InputEvent::Down);
     }
     let full_circle = app.browser().view().cursor;
 
-    app.step_with(InputEvent::Prev);
+    app.step_with(InputEvent::Up);
     assert_eq!(
         app.browser().view().cursor,
         (full_circle + 19) % 20,
@@ -189,7 +190,7 @@ fn an_idle_view_redraws_only_at_the_animation_rate() {
 
     // ...but a real change must still draw, immediately.
     let before_input = app.renderer().frames.len();
-    app.step_with(InputEvent::Next);
+    app.step_with(InputEvent::Down);
     assert!(
         app.renderer().frames.len() > before_input,
         "moving the cursor must redraw"
@@ -269,7 +270,7 @@ fn slots_can_be_assigned_independently_and_stepped_between() {
     // Put preset 3 into whichever slot is selected, and go there.
     let first = app.browser().view().selected;
     for _ in 0..3 {
-        app.step_with(InputEvent::Next);
+        app.step_with(InputEvent::Down);
     }
     let want_first = app.browser().view().cursor;
     app.step_with(InputEvent::Select);
@@ -279,12 +280,18 @@ fn slots_can_be_assigned_independently_and_stepped_between() {
     );
 
     // Switch to editing the other slot and give it something different.
-    app.step_with(InputEvent::Mode);
+    // Directional: A is drawn on the left, B on the right.
+    let other_side = if first == Slot::A {
+        InputEvent::Right
+    } else {
+        InputEvent::Left
+    };
+    app.step_with(other_side);
     let second = app.browser().view().selected;
-    assert_ne!(second, first, "Mode must move to the other slot");
+    assert_ne!(second, first, "the other side must select the other slot");
 
     for _ in 0..5 {
-        app.step_with(InputEvent::Next);
+        app.step_with(InputEvent::Down);
     }
     let want_second = app.browser().view().cursor;
     app.step_with(InputEvent::Select);
@@ -308,7 +315,7 @@ fn slots_can_be_assigned_independently_and_stepped_between() {
 
 /// Gain is the one control that applies as it moves, like a knob.
 #[test]
-fn gain_changes_reach_the_pedal() {
+fn input_trim_changes_reach_the_pedal() {
     let (_sim, mut app) = app_with([]);
     app.start().unwrap();
     app.settle_until(BUDGET, |b| b.view().active.is_some());
@@ -316,15 +323,26 @@ fn gain_changes_reach_the_pedal() {
     // Page around to Gain.
     for _ in 0..3 {
         app.step_with(InputEvent::Page);
-        if app.browser().view().screen == pinex_ui::browser::Screen::Gain {
+        if app.browser().view().screen == pinex_ui::browser::Screen::Levels {
             break;
         }
     }
-    assert_eq!(app.browser().view().screen, pinex_ui::browser::Screen::Gain);
+    assert_eq!(
+        app.browser().view().screen,
+        pinex_ui::browser::Screen::Levels
+    );
+
+    // The page opens on the output level, which is what a player rides; trim
+    // is the row below it.
+    app.step_with(InputEvent::Down);
+    assert_eq!(
+        app.browser().view().level_focus,
+        pinex_ui::browser::Level::Trim
+    );
 
     let before = app.browser().view().gain_db;
     for _ in 0..4 {
-        app.step_with(InputEvent::Next);
+        app.step_with(InputEvent::Right);
     }
     app.settle(Duration::from_millis(400));
 

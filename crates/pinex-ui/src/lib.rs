@@ -17,6 +17,6 @@ pub mod preview;
 pub mod render;
 pub mod skin;
 
-pub use browser::{Connection, InputEvent, PresetBrowser, View};
+pub use browser::{Connection, InputEvent, Level, PresetBrowser, Screen, View};
 pub use preview::{PreviewPanel, PreviewRenderer};
-pub use render::{lines, ConsoleRenderer, Multi, RecordingRenderer, Renderer};
+pub use render::{lines, ConsoleRenderer, Multi, RecordingRenderer, RenderKey, Renderer};

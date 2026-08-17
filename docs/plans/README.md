@@ -112,10 +112,14 @@ Still open:
   only when the previous one answers, so the pedal sets the rate. Found because
   the Refresh button emitted all twenty-one requests at once, which is the
   pattern that wedged it.
-- **Master volume (`0x0309`) is unimplemented.** "Global gain" is currently
-  input trim, which is in the state and safe to patch. Master volume is a
-  separate message documented by `Builty/TonexOneController` and never sent by
-  us. See `docs/protocol-metadata.md`.
+- ~~**Master volume (`0x0309`) is unimplemented.**~~ — **done.** Read and
+  written, on its own page row beside input trim. The value on the wire is a
+  0..10 linear scale rather than decibels, which the note here had not
+  recorded; sending decibels straight through would have put `-40` into a
+  `0..10` control. Clamped to −40..+3 dB, which the reference implementation
+  does not do. It appears in no state message, so it is requested on connect
+  and after every write, and shown as `-- dB` until the pedal answers rather
+  than as a number we assumed.
 - **112 named parameters are unreachable.** Single-parameter writes would turn
   this from a preset browser into a tone controller. Deliberately out of scope
   so far — the goal said effects settings were not needed.

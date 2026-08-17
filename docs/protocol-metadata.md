@@ -35,10 +35,36 @@ have Editor support (ours qualifies):
   payload `B9 04 02 00 <index> 88 <f32>`. 112 named parameters — noise gate,
   compressor, EQ, amp model gain/volume/presence/depth, cabinet and mic
   placement, reverb, modulation, delay.
-- **Set master volume.** Same message, payload marker `0x03` instead of `0x02`.
 - **Full preset dump** (`PresetDetail::Full`, ~30 KB) rather than the summary.
   We have never captured one — the simulator deliberately refuses to fake it.
 - `TYPE_PARAM_CHANGED`, a notification we do not yet recognise.
+
+## Master volume — implemented
+
+Not in the state message at all, so it is the one setting with no snapshot to
+patch and no diff to assert. It has its own request and its own report.
+
+| | |
+|---|---|
+| Write | type `0x0309`, `B9 03 81 09 03 82 0A 00 80 0B 03` + `B9 04 03 00 00 88 <f32>` |
+| Read | type `0x030D`, `B9 03 81 0D 03 82 05 00 80 0B 03 B9 03 03 00 00` |
+| Reply | type `0x0309`, marker `B9 04 03`, 2-byte LE index, `88`, `<f32>`; index `0` is master volume |
+
+**The value on the wire is a 0..10 linear scale, not decibels.** This is the
+part worth writing down: an earlier note here said only "same message, payload
+marker `0x03` instead of `0x02`", which is true and hides the thing that
+matters. `Builty/TonexOneController` converts on both sides —
+`((db + 40) / 43) * 10` going out, `((raw / 10) * 43) - 40` coming back — so
+decibels never touch the wire. Sending `-40` because it looked like a decibel
+value would put it far outside a `0..10` control.
+
+The reference clamps nowhere. We clamp to −40..+3 dB in `master_volume_to_wire`,
+and fold NaN to the floor rather than letting it reach the pedal, because this
+is the one parameter where a wrong number is measured in volume.
+
+Because the pedal never volunteers this value, the app asks for it on connect
+and again after every write, and displays only what came back — `-- dB` until
+then, rather than a number we assumed.
 
 ## The start-relative offset trap
 

@@ -74,6 +74,19 @@ impl Pedal {
         self.writer.write_all(&framed)
     }
 
+    /// Set master volume, in dB. Clamped by the codec.
+    ///
+    /// Nothing confirms this by itself — master volume is in no state message —
+    /// so follow it with [`Pedal::request_master_volume`] and believe that.
+    pub fn set_master_volume(&mut self, db: f32) -> io::Result<()> {
+        self.writer.write_all(&message::set_master_volume(db))
+    }
+
+    /// Ask the pedal for its master volume. Answered by `ParamChanged`.
+    pub fn request_master_volume(&mut self) -> io::Result<()> {
+        self.writer.write_all(&message::request_master_volume())
+    }
+
     /// Send state back to the pedal.
     ///
     /// The body goes out exactly as it came in apart from the patched bytes —
