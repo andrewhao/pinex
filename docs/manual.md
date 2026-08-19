@@ -88,6 +88,16 @@ the test suite, not merely intended.
 **To step between them afterwards:** the pedal's own footswitch does it, or
 select the slot you want and press.
 
+**The footswitch always wins.** Stomping moves the panel to whichever slot is
+now playing and discards whatever you were part-way through choosing. The
+footswitch is you telling the pedal which slot you mean, so an edit still aimed
+at the slot you just left is aimed at the wrong sound — that is how "edit B,
+stomp back to A, edit A" ended up writing B. Nothing has been sent to the pedal
+at that point, so nothing is lost but a few presses.
+
+You can still choose the silent slot on purpose with ← or → and stage the next
+sound into it. That choice just does not survive a stomp.
+
 ## Choosing a preset in stomp mode
 
 Stomp mode uses the pedal's third slot (C), which only exists in that mode. One
