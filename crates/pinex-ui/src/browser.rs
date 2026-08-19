@@ -366,6 +366,7 @@ impl PresetBrowser {
                     state.slot_preset(Slot::B),
                     state.slot_preset(Slot::C),
                 ]);
+                let previous_slot = self.active_slot;
                 self.active_slot = state.active_slot().ok();
                 self.stomp_mode = state.stomp_mode().map(|m| m == 1).unwrap_or(false);
                 self.bypassed = state.is_bypassed();
@@ -388,10 +389,29 @@ impl PresetBrowser {
                         if self.pending == Some(active) {
                             self.pending = None;
                         }
-                        // On the very first state, park the cursor on what is
-                        // playing so the display opens on the truth.
-                        if first_sync {
+                        // Park the display on what is playing — the preset
+                        // under the cursor and the slot being edited — whenever
+                        // the pedal moves to a different slot, and on the first
+                        // state of all.
+                        //
+                        // **The footswitch wins.** It is the player saying which
+                        // slot they mean, so an edit aimed at the slot they just
+                        // left is an edit aimed at the wrong sound. Editing B,
+                        // stomping back to A and then editing A wrote B, because
+                        // the edited slot was only ever parked once. Half a
+                        // gesture is discarded here on purpose: nothing was sent
+                        // to the pedal, and carrying it over would apply it
+                        // somewhere the player is no longer looking.
+                        //
+                        // Guarded on the slot having *changed*, so ordinary
+                        // state updates never yank the cursor out from under
+                        // someone who is browsing.
+                        let moved_slot = self.active_slot != previous_slot;
+                        if first_sync || moved_slot {
                             self.cursor = active.min(MAX_PRESETS - 1);
+                            if let Some(slot @ (Slot::A | Slot::B)) = self.active_slot {
+                                self.selected = slot;
+                            }
                         }
                     }
                     Err(e) => self.last_error = Some(e.to_string()),
@@ -639,6 +659,21 @@ mod tests {
         })
     }
 
+    /// A state with `preset` loaded in `slot`, and that slot playing.
+    fn state_playing_in(slot: Slot, preset: u8) -> PedalEvent {
+        use pinex_proto::state::offset_from_end as off;
+        let mut raw = vec![0u8; 64];
+        let len = raw.len();
+        raw[len - off::CURRENT_SLOT] = slot as u8;
+        let at = match slot {
+            Slot::A => off::SLOT_A_PRESET,
+            Slot::B => off::SLOT_B_PRESET,
+            Slot::C => off::SLOT_C_PRESET,
+        };
+        raw[len - at] = preset;
+        PedalEvent::StateChanged(PedalState::from_body(raw).unwrap())
+    }
+
     fn connected() -> PresetBrowser {
         let mut b = PresetBrowser::new();
         b.apply(&PedalEvent::Connected {
@@ -833,6 +868,88 @@ mod tests {
         b.apply(&state_with_active(3));
         b.apply(&state_with_active(11));
         assert_eq!(b.view().active, Some(11));
+    }
+
+    /// The panel must open editing the slot that is playing, not slot A.
+    ///
+    /// `selected` defaulted to A and only ever moved when someone pressed left
+    /// or right. With the pedal on B the panel therefore opened editing A while
+    /// previewing B's preset in A's box — and the first Select wrote A and
+    /// **switched the pedal to it**, which is not what "apply" is supposed to
+    /// mean when you are looking at B.
+    #[test]
+    fn the_first_state_parks_the_edited_slot_on_the_one_playing() {
+        let mut b = connected();
+        b.apply(&state_playing_in(Slot::B, 7));
+
+        assert_eq!(b.view().selected, Slot::B, "must open editing what plays");
+        assert_eq!(b.view().cursor, 7, "and on the preset it holds");
+    }
+
+    /// The reported bug, end to end: open with B playing, scroll, apply.
+    /// Nothing about slot A may move.
+    #[test]
+    fn applying_with_b_playing_does_not_touch_slot_a() {
+        let mut b = connected();
+        b.apply(&state_playing_in(Slot::B, 7));
+        b.handle(InputEvent::Down);
+
+        let cmds = b.handle(InputEvent::Select);
+
+        match cmds.as_slice() {
+            [Command::AssignSlot(Slot::B, 8)] => {}
+            [Command::LoadSlot(Slot::B, 8)] => {}
+            other => panic!("should act on slot B, got {other:?}"),
+        }
+    }
+
+    /// Stomping the footswitch discards whatever was being edited and moves
+    /// the panel to the slot now playing.
+    ///
+    /// The reported sequence: edit B, stomp back to A, edit A — and B was
+    /// still what got written, because the edited slot only followed the pedal
+    /// on the very first state. The footswitch is the player telling the pedal
+    /// which slot they mean, and the pedal is the source of truth for that.
+    #[test]
+    fn stomping_to_the_other_slot_moves_the_edit_there_and_drops_the_old_one() {
+        let mut b = connected();
+        b.apply(&state_playing_in(Slot::B, 7));
+        b.handle(InputEvent::Down);
+        b.handle(InputEvent::Down);
+        assert_eq!(b.view().selected, Slot::B);
+        assert_eq!(b.view().cursor, 9, "mid-edit on B");
+
+        // The player stomps back to A, which holds preset 3.
+        b.apply(&state_playing_in(Slot::A, 2));
+
+        assert_eq!(
+            b.view().selected,
+            Slot::A,
+            "the edit follows the footswitch"
+        );
+        assert_eq!(b.view().cursor, 2, "and the half-finished edit is dropped");
+
+        let cmds = b.handle(InputEvent::Select);
+        match cmds.as_slice() {
+            [Command::AssignSlot(Slot::A, 2)] | [Command::LoadSlot(Slot::A, 2)] => {}
+            other => panic!("must act on A, the slot now playing: {other:?}"),
+        }
+    }
+
+    /// The silent slot can still be chosen on purpose — it just does not
+    /// survive a stomp, because the stomp says which slot the player means.
+    #[test]
+    fn the_other_slot_can_still_be_chosen_on_purpose() {
+        let mut b = connected();
+        b.apply(&state_playing_in(Slot::B, 7));
+        b.handle(InputEvent::Left);
+        assert_eq!(b.view().selected, Slot::A);
+
+        let cmds = b.handle(InputEvent::Select);
+        assert!(
+            matches!(cmds.as_slice(), [Command::LoadSlot(Slot::A, _)]),
+            "the silent slot loads and switches, got {cmds:?}"
+        );
     }
 
     #[test]
